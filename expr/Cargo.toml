@@ -1,0 +1,5 @@
+# [File 03] expr crate manifest
+[package]
+name = "expr"
+version = "0.1.0"
+edition = "2021"
