@@ -9,10 +9,11 @@
 // DataFusion ref: datafusion/common/src/dfschema.rs
 
 use crate::types::DataType;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// A single column definition.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Field {
     pub name: String,
     pub data_type: DataType,
@@ -28,9 +29,10 @@ impl Field {
 }
 
 /// Ordered list of fields describing the shape of a relation (table or intermediate result).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Schema {
     pub fields: Vec<Field>,
+    #[serde(skip)]
     pub lookup: HashMap<String, usize>,
 }
 
@@ -42,6 +44,14 @@ impl Schema {
         }
 
         Self { fields, lookup }
+    }
+
+    /// Rebuild the lookup map from fields. Call after deserialization.
+    pub fn rebuild_lookup(&mut self) {
+        self.lookup.clear();
+        for (i, f) in self.fields.iter().enumerate() {
+            self.lookup.insert(f.name.clone(), i);
+        }
     }
 
     /// Look up a field by name. Returns the index and a reference to the Field.

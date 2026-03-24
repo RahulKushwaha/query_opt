@@ -1,6 +1,5 @@
-# [File 01] Workspace manifest
 [workspace]
-members = ["expr", "optimizer", "physical-plan", "execution"]
+members = ["expr", "optimizer", "physical-plan", "execution", "storage", "sql-parser"]
 resolver = "2"
 
 [package]
@@ -13,3 +12,6 @@ expr = { path = "expr" }
 optimizer = { path = "optimizer" }
 physical-plan = { path = "physical-plan" }
 execution = { path = "execution" }
+storage = { path = "storage" }
+sql-parser = { path = "sql-parser" }
+rustyline = "15"

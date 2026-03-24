@@ -8,10 +8,11 @@
 //
 // DataFusion ref: datafusion/common/src/scalar.rs, datafusion/common/src/types.rs
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Runtime value — the actual data flowing through the query engine.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     Int(i64),
     Float(f64),
@@ -21,7 +22,7 @@ pub enum Value {
 }
 
 /// Column data type — used in schema definitions.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DataType {
     Int,
     Float,
