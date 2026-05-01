@@ -1,44 +1,102 @@
+pub mod catalog;
 pub mod engine;
+pub mod materializer;
+pub mod read;
+pub mod table;
+pub mod write;
 
-use bincode;
-use expr::expr::Operator;
+pub use catalog::Catalog;
+pub use materializer::Materializer;
+pub use read::StorageRead;
+pub use write::StorageWrite;
+
 use expr::schema::{Field, Schema};
 use expr::types::{DataType, Value};
 use rocksdb::{ColumnFamilyDescriptor, Options, DB};
-use serde::{Deserialize, Serialize};
+use row::RowCodec;
+use row::types::RowKey;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 
 const META_CF: &str = "_meta";
 
-/// Metadata for a single table, stored in the _meta column family.
-#[derive(Serialize, Deserialize)]
-struct TableMeta {
-    schema: Vec<(String, DataType)>,
-    next_row_id: u64,
-    indexes: Vec<String>, // indexed column names
+/// Meta row schema: PK = table_name (Str), value = next_row_id (Int), schema_str (Str), indexes_str (Str)
+fn meta_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("table_name", DataType::Str),
+        Field::new("next_row_id", DataType::Int),
+        Field::new("schema_str", DataType::Str),
+        Field::new("indexes_str", DataType::Str),
+    ])
+}
+
+fn meta_codec() -> RowCodec {
+    RowCodec::new(1)
+}
+
+pub(crate) struct TableMeta {
+    pub(crate) schema: Vec<(String, DataType, bool)>, // (name, type, is_pk)
+    pub(crate) next_row_id: u64,
+    pub(crate) indexes: Vec<String>,
+}
+
+impl TableMeta {
+    fn encode_schema_str(&self) -> String {
+        self.schema
+            .iter()
+            .map(|(name, dt, pk)| format!("{}:{}:{}", name, dt, if *pk { "1" } else { "0" }))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn encode_indexes_str(&self) -> String {
+        self.indexes.join(",")
+    }
+
+    fn decode_schema_str(s: &str) -> Vec<(String, DataType, bool)> {
+        if s.is_empty() {
+            return Vec::new();
+        }
+        s.split(',')
+            .map(|pair| {
+                let parts: Vec<&str> = pair.splitn(3, ':').collect();
+                let name = parts[0].to_string();
+                let dt = match parts[1] {
+                    "int" => DataType::Int,
+                    "float" => DataType::Float,
+                    "str" => DataType::Str,
+                    "bool" => DataType::Bool,
+                    other => panic!("unknown data type: {}", other),
+                };
+                let is_pk = parts.get(2).map(|v| *v == "1").unwrap_or(false);
+                (name, dt, is_pk)
+            })
+            .collect()
+    }
+
+    fn decode_indexes_str(s: &str) -> Vec<String> {
+        if s.is_empty() {
+            return Vec::new();
+        }
+        s.split(',').map(|s| s.to_string()).collect()
+    }
 }
 
 /// RocksDB-backed storage layer for the query engine.
 pub struct RocksStorage {
-    db: DB,
-    /// Cache of table metadata to avoid repeated deserialization.
-    meta_cache: Mutex<HashMap<String, TableMeta>>,
+    pub(crate) db: DB,
+    pub(crate) meta_cache: Mutex<HashMap<String, TableMeta>>,
 }
 
 impl RocksStorage {
-    /// Open or create a RocksDB database at the given path.
     pub fn new(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref();
-
-        // Try to list existing column families, fall back to just default + _meta.
         let cf_names = DB::list_cf(&Options::default(), path).unwrap_or_default();
 
         let mut cf_descriptors = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
-        // Always include "default" and META_CF.
         for name in [String::from("default"), String::from(META_CF)]
             .into_iter()
             .chain(cf_names.into_iter())
@@ -63,122 +121,103 @@ impl RocksStorage {
         storage
     }
 
-    fn load_meta_cache(&self) {
+    pub(crate) fn load_meta_cache(&self) {
         let cf = self.db.cf_handle(META_CF).unwrap();
         let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
         let mut cache = self.meta_cache.lock().unwrap();
+        let codec = meta_codec();
+        let schema = meta_schema();
         for item in iter {
-            let (key, val) = item.expect("meta iteration failed");
-            let table_name = String::from_utf8(key.to_vec()).unwrap();
-            if let Ok(meta) = bincode::deserialize::<TableMeta>(&val) {
-                cache.insert(table_name, meta);
-            }
-        }
-    }
+            let (key_bytes, val_bytes) = item.expect("meta iteration failed");
+            let rk = row::RowKey(key_bytes.to_vec());
+            let rv = row::RowValue(val_bytes.to_vec());
+            let values = codec.decode(&rk, &rv, &schema);
 
-    fn save_meta(&self, table_name: &str, meta: &TableMeta) {
-        let cf = self.db.cf_handle(META_CF).unwrap();
-        let bytes = bincode::serialize(meta).unwrap();
-        self.db.put_cf(cf, table_name.as_bytes(), &bytes).unwrap();
-    }
+            let table_name = match &values[0] {
+                Value::Str(s) => s.clone(),
+                _ => continue,
+            };
+            let next_row_id = match &values[1] {
+                Value::Int(i) => *i as u64,
+                _ => 0,
+            };
+            let schema_str = match &values[2] {
+                Value::Str(s) => s.as_str(),
+                _ => "",
+            };
+            let indexes_str = match &values[3] {
+                Value::Str(s) => s.as_str(),
+                _ => "",
+            };
 
-    /// Create a new table with the given schema.
-    pub fn create_table(&self, name: &str, schema: &Schema) {
-        // Create column family for the table data.
-        self.db
-            .create_cf(name, &Options::default())
-            .unwrap_or_else(|_| {
-                // CF may already exist if reopening.
+            cache.insert(table_name, TableMeta {
+                schema: TableMeta::decode_schema_str(schema_str),
+                next_row_id,
+                indexes: TableMeta::decode_indexes_str(indexes_str),
             });
-
-        let meta = TableMeta {
-            schema: schema
-                .fields
-                .iter()
-                .map(|f| (f.name.clone(), f.data_type.clone()))
-                .collect(),
-            next_row_id: 0,
-            indexes: Vec::new(),
-        };
-        self.save_meta(name, &meta);
-        self.meta_cache
-            .lock()
-            .unwrap()
-            .insert(name.to_string(), meta);
-    }
-
-    /// Insert a row into the named table.
-    pub fn insert_row(&self, table: &str, row: Vec<Value>) {
-        let row_id = {
-            let mut cache = self.meta_cache.lock().unwrap();
-            let meta = cache.get_mut(table).expect("table not found");
-            let id = meta.next_row_id;
-            meta.next_row_id += 1;
-            self.save_meta(table, meta);
-            id
-        };
-
-        let cf = self.db.cf_handle(table).expect("table CF not found");
-        let key = row_id.to_be_bytes();
-        let val = bincode::serialize(&row).unwrap();
-        self.db.put_cf(cf, key, &val).unwrap();
-
-        // Update secondary indexes.
-        let indexes = {
-            let cache = self.meta_cache.lock().unwrap();
-            let meta = cache.get(table).unwrap();
-            meta.indexes.clone()
-        };
-        let schema = self.get_schema(table).unwrap();
-        for col_name in &indexes {
-            if let Some((idx, _)) = schema.field_by_name(col_name) {
-                self.write_index_entry(table, col_name, &row[idx], row_id);
-            }
         }
     }
 
-    /// Full table scan — returns all rows.
-    pub fn scan_table(&self, table: &str) -> Vec<Vec<Value>> {
-        let cf = match self.db.cf_handle(table) {
-            Some(cf) => cf,
-            None => return Vec::new(),
-        };
-        let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
-        let mut rows = Vec::new();
-        for item in iter {
-            let (_key, val) = item.expect("scan iteration failed");
-            if let Ok(row) = bincode::deserialize::<Vec<Value>>(&val) {
-                rows.push(row);
-            }
+    pub(crate) fn save_meta(&self, table_name: &str, meta: &TableMeta) {
+        let cf = self.db.cf_handle(META_CF).unwrap();
+        let codec = meta_codec();
+        let values = vec![
+            Value::Str(table_name.to_string()),
+            Value::Int(meta.next_row_id as i64),
+            Value::Str(meta.encode_schema_str()),
+            Value::Str(meta.encode_indexes_str()),
+        ];
+        let (rk, rv) = codec.encode(&values);
+        self.db.put_cf(cf, &rk.0, &rv.0).unwrap();
+    }
+
+    /// Encode a data row into bytes using the row format.
+    pub(crate) fn encode_data_row(values: &[Value]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for v in values {
+            row::encoding::encode_value(v, &mut buf);
         }
-        rows
+        buf
     }
 
-    /// Get the schema for a table.
-    pub fn get_schema(&self, table: &str) -> Option<Schema> {
-        let cache = self.meta_cache.lock().unwrap();
-        let meta = cache.get(table)?;
-        let fields: Vec<Field> = meta
-            .schema
-            .iter()
-            .map(|(name, dt)| Field::new(name.clone(), dt.clone()))
-            .collect();
-        Some(Schema::new(fields))
+    /// Decode a data row from bytes using the row format (no PK split).
+    pub(crate) fn decode_data_row(bytes: &[u8], schema: &Schema) -> Vec<Value> {
+        let mut result = Vec::with_capacity(schema.fields.len());
+        let mut pos = 0;
+        for field in &schema.fields {
+            let (v, consumed) = row::encoding::decode_value_with_len(&bytes[pos..], &field.data_type);
+            result.push(v);
+            pos += consumed;
+        }
+        result
     }
 
-    /// List all registered table names.
-    pub fn list_tables(&self) -> Vec<String> {
-        self.meta_cache.lock().unwrap().keys().cloned().collect()
+    /// Decode a DataRow using the table's PK info.
+    /// If the table has PK columns, uses RowCodec to decode key + value.
+    /// Otherwise, decodes all columns from the value bytes.
+    pub fn decode_datarow(dr: &row::DataRow, table: &crate::table::Table) -> Vec<Value> {
+        let schema = table.schema();
+        let pk_cols = table.pk_columns();
+        if !pk_cols.is_empty() {
+            let pk_positions: Vec<usize> = pk_cols.iter().map(|c| c.col_pos).collect();
+            let codec = row::RowCodec::from_pk_positions(pk_positions);
+            codec.decode(&dr.key, &dr.value, &schema)
+        } else {
+            Self::decode_data_row(&dr.value.0, &schema)
+        }
     }
 
-    // ── Secondary Index Support ────────────────────────
-
-    fn index_cf_name(table: &str, column: &str) -> String {
+    pub(crate) fn index_cf_name(table: &str, column: &str) -> String {
         format!("idx_{}_{}", table, column)
     }
 
-    fn encode_index_key(value: &Value, row_id: u64) -> Vec<u8> {
-        // Prefix byte for sort order: 0=Null, 1=Bool, 2=Int, 3=Float, 4=Str
+    /// Encode just the value portion of an index key (no pk suffix).
+    pub fn encode_index_prefix(value: &Value) -> RowKey {
+        let full = Self::encode_index_key(value, &[]);
+        RowKey(full[..full.len() - 2].to_vec())
+    }
+
+    pub(crate) fn encode_index_key(value: &Value, pk_bytes: &[u8]) -> Vec<u8> {
         let mut key = Vec::new();
         match value {
             Value::Null => key.push(0),
@@ -188,7 +227,6 @@ impl RocksStorage {
             }
             Value::Int(i) => {
                 key.push(2);
-                // Flip sign bit for correct byte ordering of signed integers.
                 key.extend_from_slice(&((*i as u64) ^ (1u64 << 63)).to_be_bytes());
             }
             Value::Float(f) => {
@@ -204,124 +242,31 @@ impl RocksStorage {
             Value::Str(s) => {
                 key.push(4);
                 key.extend_from_slice(s.as_bytes());
-                key.push(0); // null terminator for prefix-free encoding
+                key.push(0);
             }
         }
-        key.extend_from_slice(&row_id.to_be_bytes());
+        // Append pk_bytes then pk_len (u16) so we can split on read.
+        key.extend_from_slice(pk_bytes);
+        key.extend_from_slice(&(pk_bytes.len() as u16).to_be_bytes());
         key
     }
 
-    fn write_index_entry(&self, table: &str, column: &str, value: &Value, row_id: u64) {
+    pub(crate) fn write_index_entry(&self, table: &str, column: &str, value: &Value, pk_bytes: &[u8]) {
         let cf_name = Self::index_cf_name(table, column);
         if let Some(cf) = self.db.cf_handle(&cf_name) {
-            let key = Self::encode_index_key(value, row_id);
+            let key = Self::encode_index_key(value, pk_bytes);
             self.db.put_cf(cf, key, &[]).unwrap();
         }
     }
-
-    /// Create a secondary index on a column, backfilling existing rows.
-    pub fn create_index(&self, table: &str, column: &str) {
-        let cf_name = Self::index_cf_name(table, column);
-        self.db
-            .create_cf(&cf_name, &Options::default())
-            .unwrap_or(());
-
-        // Backfill from existing data.
-        let schema = self.get_schema(table).expect("table not found");
-        let col_idx = schema
-            .field_by_name(column)
-            .expect("column not found in schema")
-            .0;
-
-        let table_cf = self.db.cf_handle(table).unwrap();
-        let iter = self.db.iterator_cf(table_cf, rocksdb::IteratorMode::Start);
-        for item in iter {
-            let (key_bytes, val) = item.unwrap();
-            let row_id = u64::from_be_bytes(key_bytes[..8].try_into().unwrap());
-            let row: Vec<Value> = bincode::deserialize(&val).unwrap();
-            self.write_index_entry(table, column, &row[col_idx], row_id);
-        }
-
-        // Record index in metadata.
-        let mut cache = self.meta_cache.lock().unwrap();
-        let meta = cache.get_mut(table).unwrap();
-        if !meta.indexes.contains(&column.to_string()) {
-            meta.indexes.push(column.to_string());
-            self.save_meta(table, meta);
-        }
-    }
-
-    /// Check if an index exists on a table column.
-    pub fn has_index(&self, table: &str, column: &str) -> bool {
-        let cache = self.meta_cache.lock().unwrap();
-        cache
-            .get(table)
-            .map(|m| m.indexes.contains(&column.to_string()))
-            .unwrap_or(false)
-    }
-
-    /// Scan using a secondary index with a comparison operator and value.
-    /// Returns rows matching the condition `column <op> value`.
-    pub fn index_scan(
-        &self,
-        table: &str,
-        column: &str,
-        op: &Operator,
-        target: &Value,
-    ) -> Vec<Vec<Value>> {
-        let cf_name = Self::index_cf_name(table, column);
-        let idx_cf = match self.db.cf_handle(&cf_name) {
-            Some(cf) => cf,
-            None => return Vec::new(),
-        };
-        let table_cf = self.db.cf_handle(table).unwrap();
-
-        // Build the prefix for the target value (without row_id suffix).
-        let target_prefix = {
-            let full = Self::encode_index_key(target, 0);
-            full[..full.len() - 8].to_vec() // strip the 8-byte row_id
-        };
-
-        let mut row_ids = Vec::new();
-        let iter = self.db.iterator_cf(idx_cf, rocksdb::IteratorMode::Start);
-
-        for item in iter {
-            let (key_bytes, _) = item.unwrap();
-            let key = key_bytes.to_vec();
-            let (value_part, rid_bytes) = key.split_at(key.len() - 8);
-            let row_id = u64::from_be_bytes(rid_bytes.try_into().unwrap());
-
-            let matches = match op {
-                Operator::Eq => value_part == target_prefix.as_slice(),
-                Operator::Lt => value_part < target_prefix.as_slice(),
-                Operator::LtEq => value_part <= target_prefix.as_slice(),
-                Operator::Gt => value_part > target_prefix.as_slice(),
-                Operator::GtEq => value_part >= target_prefix.as_slice(),
-                Operator::NotEq => value_part != target_prefix.as_slice(),
-                _ => false,
-            };
-
-            if matches {
-                row_ids.push(row_id);
-            }
-        }
-
-        // Point-lookup each matching row.
-        let mut rows = Vec::new();
-        for rid in row_ids {
-            if let Ok(Some(val)) = self.db.get_cf(table_cf, rid.to_be_bytes()) {
-                if let Ok(row) = bincode::deserialize::<Vec<Value>>(&val) {
-                    rows.push(row);
-                }
-            }
-        }
-        rows
-    }
 }
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::materializer::Materializer;
+    use expr::schema::{Field, Schema};
+    use expr::types::{DataType, Value};
     use tempfile::tempdir;
 
     fn test_schema() -> Schema {
@@ -332,36 +277,49 @@ mod tests {
         ])
     }
 
+    fn decode_rows(rows: &[row::DataRow], table: &crate::table::Table) -> Vec<Vec<Value>> {
+        rows.iter().map(|dr| RocksStorage::decode_datarow(dr, table)).collect()
+    }
+
     #[test]
     fn roundtrip_create_insert_scan() {
         let dir = tempdir().unwrap();
-        let storage = RocksStorage::new(dir.path());
-        let schema = test_schema();
-        storage.create_table("users", &schema);
+        let mut storage = RocksStorage::new(dir.path());
+        storage.create_table("users", &test_schema());
+        let t = storage.get_table("users").unwrap();
 
-        storage.insert_row(
-            "users",
-            vec![Value::Int(1), Value::Str("alice".into()), Value::Int(90)],
-        );
-        storage.insert_row(
-            "users",
-            vec![Value::Int(2), Value::Str("bob".into()), Value::Int(75)],
-        );
+        storage.insert_row(&t, vec![Value::Int(1), Value::Str("alice".into()), Value::Int(90)]);
+        storage.insert_row(&t, vec![Value::Int(2), Value::Str("bob".into()), Value::Int(75)]);
 
-        let rows = storage.scan_table("users");
+        let data_rows = storage.scan(&t, None, None);
+        let rows = decode_rows(&data_rows, &t);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0][1], Value::Str("alice".into()));
         assert_eq!(rows[1][2], Value::Int(75));
     }
 
     #[test]
+    fn point_lookup_found() {
+        let dir = tempdir().unwrap();
+        let mut storage = RocksStorage::new(dir.path());
+        storage.create_table("t", &test_schema());
+        let t = storage.get_table("t").unwrap();
+        storage.insert_row(&t, vec![Value::Int(1), Value::Str("a".into()), Value::Int(10)]);
+
+        let all = storage.scan(&t, None, None);
+        let key = &all[0].key;
+        let found = storage.point_lookup(&t, key).unwrap();
+        let row = RocksStorage::decode_datarow(&found, &t);
+        assert_eq!(row[1], Value::Str("a".into()));
+    }
+
+    #[test]
     fn get_schema_roundtrip() {
         let dir = tempdir().unwrap();
-        let storage = RocksStorage::new(dir.path());
-        let schema = test_schema();
-        storage.create_table("t", &schema);
+        let mut storage = RocksStorage::new(dir.path());
+        storage.create_table("t", &test_schema());
 
-        let got = storage.get_schema("t").unwrap();
+        let got = Catalog::get_schema(&storage, "t").unwrap();
         assert_eq!(got.fields.len(), 3);
         assert_eq!(got.fields[0].name, "id");
         assert_eq!(got.fields[2].data_type, DataType::Int);
@@ -370,61 +328,209 @@ mod tests {
     #[test]
     fn list_tables() {
         let dir = tempdir().unwrap();
-        let storage = RocksStorage::new(dir.path());
+        let mut storage = RocksStorage::new(dir.path());
         storage.create_table("a", &Schema::new(vec![Field::new("x", DataType::Int)]));
         storage.create_table("b", &Schema::new(vec![Field::new("y", DataType::Str)]));
 
-        let mut tables = storage.list_tables();
+        let mut tables = Catalog::list_tables(&storage);
         tables.sort();
         assert_eq!(tables, vec!["a", "b"]);
     }
 
-    #[test]
-    fn index_scan_eq() {
-        let dir = tempdir().unwrap();
-        let storage = RocksStorage::new(dir.path());
-        storage.create_table("t", &test_schema());
+    /// Helper: compute [start, end) for Eq on an index value.
+    fn eq_bounds(val: &Value) -> (row::types::RowKey, Option<row::types::RowKey>) {
+        let prefix = RocksStorage::encode_index_prefix(val);
+        let mut next = prefix.0.clone();
+        let has_next = {
+            let mut ok = false;
+            for i in (0..next.len()).rev() {
+                if next[i] < 0xFF { next[i] += 1; ok = true; break; }
+                next[i] = 0;
+            }
+            ok
+        };
+        (prefix, if has_next { Some(row::types::RowKey(next)) } else { None })
+    }
 
-        storage.insert_row("t", vec![Value::Int(1), Value::Str("a".into()), Value::Int(10)]);
-        storage.insert_row("t", vec![Value::Int(2), Value::Str("b".into()), Value::Int(20)]);
-        storage.insert_row("t", vec![Value::Int(3), Value::Str("c".into()), Value::Int(10)]);
+    #[test]
+    fn index_scan_returns_keys() {
+        let dir = tempdir().unwrap();
+        let mut storage = RocksStorage::new(dir.path());
+        storage.create_table("t", &test_schema());
+        let t = storage.get_table("t").unwrap();
+
+        storage.insert_row(&t, vec![Value::Int(1), Value::Str("a".into()), Value::Int(10)]);
+        storage.insert_row(&t, vec![Value::Int(2), Value::Str("b".into()), Value::Int(20)]);
+        storage.insert_row(&t, vec![Value::Int(3), Value::Str("c".into()), Value::Int(10)]);
 
         storage.create_index("t", "score");
+        let t = storage.get_table("t").unwrap();
 
-        let rows = storage.index_scan("t", "score", &Operator::Eq, &Value::Int(10));
+        let (start, end) = eq_bounds(&Value::Int(10));
+        let keys = storage.index_scan(&t, "score", Some(&start), end.as_ref());
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn index_scan_materialize() {
+        let dir = tempdir().unwrap();
+        let mut storage = RocksStorage::new(dir.path());
+        storage.create_table("t", &test_schema());
+        let t = storage.get_table("t").unwrap();
+
+        storage.insert_row(&t, vec![Value::Int(1), Value::Str("a".into()), Value::Int(10)]);
+        storage.insert_row(&t, vec![Value::Int(2), Value::Str("b".into()), Value::Int(20)]);
+        storage.insert_row(&t, vec![Value::Int(3), Value::Str("c".into()), Value::Int(10)]);
+
+        storage.create_index("t", "score");
+        let t = storage.get_table("t").unwrap();
+
+        let (start, end) = eq_bounds(&Value::Int(10));
+        let keys = storage.index_scan(&t, "score", Some(&start), end.as_ref());
+        let mat = Materializer::new(&storage);
+        let data_rows = mat.materialize(&t, &keys);
+        let rows = decode_rows(&data_rows, &t);
         assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r[2] == Value::Int(10)));
     }
 
     #[test]
     fn index_scan_gt() {
         let dir = tempdir().unwrap();
-        let storage = RocksStorage::new(dir.path());
+        let mut storage = RocksStorage::new(dir.path());
         storage.create_table("t", &test_schema());
+        let t = storage.get_table("t").unwrap();
 
         for i in 0..5 {
-            storage.insert_row(
-                "t",
-                vec![Value::Int(i), Value::Str(format!("r{}", i)), Value::Int(i * 10)],
-            );
+            storage.insert_row(&t, vec![Value::Int(i), Value::Str(format!("r{}", i)), Value::Int(i * 10)]);
         }
         storage.create_index("t", "score");
+        let t = storage.get_table("t").unwrap();
 
-        let rows = storage.index_scan("t", "score", &Operator::Gt, &Value::Int(20));
-        assert_eq!(rows.len(), 2); // score=30, score=40
+        // Gt(20): start at next_prefix(20), no end
+        let (_, next) = eq_bounds(&Value::Int(20));
+        let keys = storage.index_scan(&t, "score", next.as_ref(), None);
+        assert_eq!(keys.len(), 2);
     }
 
     #[test]
     fn insert_after_index_creation() {
         let dir = tempdir().unwrap();
-        let storage = RocksStorage::new(dir.path());
+        let mut storage = RocksStorage::new(dir.path());
         storage.create_table("t", &test_schema());
         storage.create_index("t", "score");
+        let t = storage.get_table("t").unwrap();
 
-        storage.insert_row("t", vec![Value::Int(1), Value::Str("a".into()), Value::Int(50)]);
-        storage.insert_row("t", vec![Value::Int(2), Value::Str("b".into()), Value::Int(60)]);
+        storage.insert_row(&t, vec![Value::Int(1), Value::Str("a".into()), Value::Int(50)]);
+        storage.insert_row(&t, vec![Value::Int(2), Value::Str("b".into()), Value::Int(60)]);
 
-        let rows = storage.index_scan("t", "score", &Operator::Eq, &Value::Int(50));
+        let (start, end) = eq_bounds(&Value::Int(50));
+        let keys = storage.index_scan(&t, "score", Some(&start), end.as_ref());
+        let mat = Materializer::new(&storage);
+        let data_rows = mat.materialize(&t, &keys);
+        let rows = decode_rows(&data_rows, &t);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0][1], Value::Str("a".into()));
+    }
+
+    #[test]
+    fn meta_persists_across_reopen() {
+        let dir = tempdir().unwrap();
+        {
+            let mut storage = RocksStorage::new(dir.path());
+            storage.create_table("t", &test_schema());
+            let t = storage.get_table("t").unwrap();
+            storage.insert_row(&t, vec![Value::Int(1), Value::Str("a".into()), Value::Int(10)]);
+            storage.create_index("t", "score");
+        }
+        let storage = RocksStorage::new(dir.path());
+        let schema = Catalog::get_schema(&storage, "t").unwrap();
+        assert_eq!(schema.fields.len(), 3);
+        assert!(Catalog::has_index(&storage, "t", "score"));
+        assert_eq!(Catalog::list_tables(&storage), vec!["t"]);
+    }
+
+    #[test]
+    fn insert_scan_with_primary_key() {
+        let dir = tempdir().unwrap();
+        let mut storage = RocksStorage::new(dir.path());
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int).with_pk(true).with_pos(0),
+            Field::new("name", DataType::Str).with_pos(1),
+            Field::new("score", DataType::Int).with_pos(2),
+        ]);
+        storage.create_table("pk_table", &schema);
+        let t = storage.get_table("pk_table").unwrap();
+
+        storage.insert_row(&t, vec![Value::Int(1), Value::Str("alice".into()), Value::Int(90)]);
+        storage.insert_row(&t, vec![Value::Int(2), Value::Str("bob".into()), Value::Int(75)]);
+
+        let data_rows = storage.scan(&t, None, None);
+        let rows = decode_rows(&data_rows, &t);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], vec![Value::Int(1), Value::Str("alice".into()), Value::Int(90)]);
+        assert_eq!(rows[1], vec![Value::Int(2), Value::Str("bob".into()), Value::Int(75)]);
+    }
+
+    #[test]
+    #[test]
+    fn scan_with_range_bounds() {
+        let dir = tempdir().unwrap();
+        let mut storage = RocksStorage::new(dir.path());
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int).with_pk(true).with_pos(0),
+            Field::new("name", DataType::Str).with_pos(1),
+        ]);
+        storage.create_table("t", &schema);
+        let t = storage.get_table("t").unwrap();
+
+        for i in 1..=5 {
+            storage.insert_row(&t, vec![Value::Int(i), Value::Str(format!("r{}", i))]);
+        }
+
+        // Full scan returns all 5.
+        assert_eq!(storage.scan(&t, None, None).len(), 5);
+
+        // Get keys for id=2 and id=4 to use as bounds.
+        let all = storage.scan(&t, None, None);
+        let key2 = &all[1].key; // id=2
+        let key4 = &all[3].key; // id=4
+
+        // Range [2, 4) should return 2 rows: id=2, id=3.
+        let range = storage.scan(&t, Some(key2), Some(key4));
+        let rows = decode_rows(&range, &t);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0], Value::Int(2));
+        assert_eq!(rows[1][0], Value::Int(3));
+
+        // Start bound only: [3, ...)
+        let from3 = storage.scan(&t, Some(&all[2].key), None);
+        assert_eq!(from3.len(), 3);
+
+        // End bound only: (..., 2) returns 1 row: id=1
+        let to2 = storage.scan(&t, None, Some(key2));
+        assert_eq!(to2.len(), 1);
+    }
+
+    fn insert_scan_pk_not_first_column() {
+        let dir = tempdir().unwrap();
+        let mut storage = RocksStorage::new(dir.path());
+        let schema = Schema::new(vec![
+            Field::new("name", DataType::Str).with_pos(0),
+            Field::new("age", DataType::Int).with_pos(1),
+            Field::new("email", DataType::Str).with_pk(true).with_pos(2),
+        ]);
+        storage.create_table("t", &schema);
+        let t = storage.get_table("t").unwrap();
+
+        storage.insert_row(&t, vec![Value::Str("alice".into()), Value::Int(30), Value::Str("a@b.com".into())]);
+        storage.insert_row(&t, vec![Value::Str("bob".into()), Value::Int(25), Value::Str("b@b.com".into())]);
+
+        let data_rows = storage.scan(&t, None, None);
+        let rows = decode_rows(&data_rows, &t);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0], Value::Str("alice".into()));
+        assert_eq!(rows[0][1], Value::Int(30));
+        assert_eq!(rows[0][2], Value::Str("a@b.com".into()));
     }
 }

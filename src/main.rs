@@ -6,7 +6,7 @@ use rustyline::DefaultEditor;
 use sql_parser::{SqlPlanner, SqlStatement};
 use std::collections::HashMap;
 use storage::engine::RocksEngine;
-use storage::RocksStorage;
+use storage::{Catalog, RocksStorage, StorageRead, StorageWrite};
 
 fn main() {
     let db_path = std::env::args()
@@ -19,7 +19,7 @@ fn main() {
     println!("Type .tables to list tables, .schema <table> to see a schema, .quit to exit.");
     println!();
 
-    let storage = RocksStorage::new(&db_path);
+    let mut storage = RocksStorage::new(&db_path);
 
     // Build initial catalog from persisted metadata.
     let mut catalog: HashMap<String, Schema> = HashMap::new();
@@ -68,7 +68,7 @@ fn main() {
                     continue;
                 }
 
-                handle_sql(trimmed, &storage, &mut catalog);
+                handle_sql(trimmed, &mut storage, &mut catalog);
             }
             Err(ReadlineError::Interrupted | ReadlineError::Eof) => break,
             Err(err) => {
@@ -79,7 +79,7 @@ fn main() {
     }
 }
 
-fn handle_sql(sql: &str, storage: &RocksStorage, catalog: &mut HashMap<String, Schema>) {
+fn handle_sql(sql: &str, storage: &mut RocksStorage, catalog: &mut HashMap<String, Schema>) {
     let is_explain = sql.to_uppercase().starts_with("EXPLAIN ");
     let actual_sql = if is_explain { &sql[8..] } else { sql };
 
@@ -110,8 +110,9 @@ fn handle_sql(sql: &str, storage: &RocksStorage, catalog: &mut HashMap<String, S
 
         SqlStatement::Insert { table, rows } => {
             let count = rows.len();
+            let t = storage.get_table(&table).expect("table not found");
             for row in rows {
-                storage.insert_row(&table, row);
+                storage.insert_row(&t, row);
             }
             println!("Inserted {} row(s) into '{}'.", count, table);
         }
@@ -182,7 +183,7 @@ fn try_physical_plan(
 /// Direct execution of a LogicalPlan when the PhysicalPlanner is not yet implemented.
 /// Builds a PhysicalPlan manually (1:1 mapping) and executes it.
 fn execute_logical_directly(
-    engine: &RocksEngine,
+    engine: &RocksEngine<RocksStorage>,
     plan: &expr::logical_plan::plan::LogicalPlan,
     _storage: &RocksStorage,
 ) -> Result<Vec<Vec<Value>>, execution::engine::ExecutionError> {

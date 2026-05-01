@@ -73,14 +73,48 @@ impl SqlPlanner {
 
     fn plan_create_table(&self, ct: &ast::CreateTable) -> Result<SqlStatement, PlanError> {
         let name = ct.name.to_string();
+
+        // Collect inline PRIMARY KEY columns.
+        let mut pk_cols: Vec<String> = Vec::new();
         let fields: Vec<Field> = ct
             .columns
             .iter()
-            .map(|col| {
+            .enumerate()
+            .map(|(pos, col)| {
                 let dt = sql_type_to_datatype(&col.data_type);
+                let is_pk = col.options.iter().any(|opt| {
+                    matches!(opt.option, ast::ColumnOption::Unique { is_primary: true, .. })
+                });
+                if is_pk {
+                    pk_cols.push(col.name.value.clone());
+                }
                 Field::new(col.name.value.clone(), dt)
+                    .with_pk(is_pk)
+                    .with_pos(pos)
             })
             .collect();
+
+        // Check table-level PRIMARY KEY constraint.
+        for constraint in &ct.constraints {
+            if let ast::TableConstraint::PrimaryKey { columns, .. } = constraint {
+                for pk_ident in columns {
+                    pk_cols.push(pk_ident.value.clone());
+                }
+            }
+        }
+
+        // Apply table-level PK to columns.
+        let fields: Vec<Field> = fields
+            .into_iter()
+            .map(|mut f| {
+                if pk_cols.contains(&f.name) {
+                    f.is_pk = true;
+                    f.nullable = false;
+                }
+                f
+            })
+            .collect();
+
         Ok(SqlStatement::CreateTable {
             name,
             schema: Schema::new(fields),
@@ -197,17 +231,17 @@ impl SqlPlanner {
         }
 
         // ORDER BY.
-        if !query.order_by.is_empty() {
-            let sort_exprs: Vec<Expr> = match &query.order_by {
-                ast::OrderBy { exprs, .. } => exprs
+        if let Some(ast::OrderBy { exprs, .. }) = &query.order_by {
+            if !exprs.is_empty() {
+                let sort_exprs: Vec<Expr> = exprs
                     .iter()
                     .map(|o| self.convert_expr(&o.expr))
-                    .collect::<Result<_, _>>()?,
-            };
-            plan = LogicalPlan::Sort {
-                exprs: sort_exprs,
-                input: Box::new(plan),
-            };
+                    .collect::<Result<_, _>>()?;
+                plan = LogicalPlan::Sort {
+                    exprs: sort_exprs,
+                    input: Box::new(plan),
+                };
+            }
         }
 
         Ok(plan)
@@ -403,7 +437,7 @@ fn sql_type_to_datatype(sql_type: &ast::DataType) -> DataType {
         | ast::DataType::SmallInt(_)
         | ast::DataType::TinyInt(_) => DataType::Int,
         ast::DataType::Float(_)
-        | ast::DataType::Double(_)
+        | ast::DataType::Double
         | ast::DataType::DoublePrecision
         | ast::DataType::Real => DataType::Float,
         ast::DataType::Boolean => DataType::Bool,
@@ -551,6 +585,38 @@ mod tests {
                 assert_eq!(schema.fields[0].data_type, DataType::Int);
                 assert_eq!(schema.fields[1].data_type, DataType::Str);
                 assert_eq!(schema.fields[2].data_type, DataType::Bool);
+            }
+            _ => panic!("expected CreateTable"),
+        }
+    }
+
+    #[test]
+    fn parse_create_table_inline_pk() {
+        let planner = SqlPlanner::new(HashMap::new());
+        let result = planner.plan_sql("CREATE TABLE t (id INT PRIMARY KEY, name VARCHAR)");
+        match result.unwrap() {
+            SqlStatement::CreateTable { schema, .. } => {
+                assert!(schema.fields[0].is_pk);
+                assert!(!schema.fields[0].nullable);
+                assert!(!schema.fields[1].is_pk);
+            }
+            _ => panic!("expected CreateTable"),
+        }
+    }
+
+    #[test]
+    fn parse_create_table_constraint_pk() {
+        let planner = SqlPlanner::new(HashMap::new());
+        let result = planner.plan_sql(
+            "CREATE TABLE t (a INT, b INT, c VARCHAR, PRIMARY KEY (a, b))"
+        );
+        match result.unwrap() {
+            SqlStatement::CreateTable { schema, .. } => {
+                assert!(schema.fields[0].is_pk);
+                assert!(schema.fields[1].is_pk);
+                assert!(!schema.fields[2].is_pk);
+                assert_eq!(schema.fields[0].col_pos, 0);
+                assert_eq!(schema.fields[1].col_pos, 1);
             }
             _ => panic!("expected CreateTable"),
         }

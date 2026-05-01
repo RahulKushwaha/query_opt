@@ -1,5 +1,5 @@
 [workspace]
-members = ["expr", "optimizer", "physical-plan", "execution", "storage", "sql-parser"]
+members = ["expr", "optimizer", "physical-plan", "execution", "storage", "sql-parser", "distributed", "row"]
 resolver = "2"
 
 [package]

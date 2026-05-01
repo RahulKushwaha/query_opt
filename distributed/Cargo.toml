@@ -1,0 +1,10 @@
+[package]
+name = "distributed"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+expr = { path = "../expr" }
+physical-plan = { path = "../physical-plan" }
+execution = { path = "../execution" }
+storage = { path = "../storage" }

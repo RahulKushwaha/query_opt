@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 expr = { path = "../expr" }
+row = { path = "../row" }
 execution = { path = "../execution" }
 physical-plan = { path = "../physical-plan" }
 rocksdb = "0.22"

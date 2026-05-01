@@ -1,48 +1,66 @@
-// [File 06] Schema and Field definitions
-//
-// ┌─────────────────────────────────────────────────────┐
-// │ IMPLEMENTATION ORDER: 2 of 15                       │
-// │ Prerequisites: expr/src/types.rs (step 1)           │
-// │ Next: expr/src/expr.rs (step 3)                     │
-// └─────────────────────────────────────────────────────┘
-//
-// DataFusion ref: datafusion/common/src/dfschema.rs
-
 use crate::types::DataType;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// A single column definition.
+/// A single column definition with storage metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Field {
+pub struct Column {
     pub name: String,
     pub data_type: DataType,
+    #[serde(default = "default_true")]
+    pub nullable: bool,
+    #[serde(default)]
+    pub is_pk: bool,
+    #[serde(default)]
+    pub col_pos: usize,
 }
 
-impl Field {
+fn default_true() -> bool { true }
+
+impl Column {
     pub fn new(name: impl Into<String>, data_type: DataType) -> Self {
         Self {
             name: name.into(),
             data_type,
+            nullable: true,
+            is_pk: false,
+            col_pos: 0,
         }
+    }
+
+    pub fn with_pk(mut self, is_pk: bool) -> Self {
+        self.is_pk = is_pk;
+        self
+    }
+
+    pub fn with_nullable(mut self, nullable: bool) -> Self {
+        self.nullable = nullable;
+        self
+    }
+
+    pub fn with_pos(mut self, col_pos: usize) -> Self {
+        self.col_pos = col_pos;
+        self
     }
 }
 
-/// Ordered list of fields describing the shape of a relation (table or intermediate result).
+/// Backward compatibility alias.
+pub type Field = Column;
+
+/// Ordered list of columns describing the shape of a relation (table or intermediate result).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Schema {
-    pub fields: Vec<Field>,
+    pub fields: Vec<Column>,
     #[serde(skip)]
     pub lookup: HashMap<String, usize>,
 }
 
 impl Schema {
-    pub fn new(fields: Vec<Field>) -> Self {
+    pub fn new(fields: Vec<Column>) -> Self {
         let mut lookup = HashMap::new();
         for field in fields.iter().enumerate() {
             lookup.insert(field.1.name.clone(), lookup.len());
         }
-
         Self { fields, lookup }
     }
 
@@ -54,11 +72,8 @@ impl Schema {
         }
     }
 
-    /// Look up a field by name. Returns the index and a reference to the Field.
-    pub fn field_by_name(&self, name: &str) -> Option<(usize, &Field)> {
-        // TODO: Iterate over self.fields, find the first field whose name matches,
-        // return Some((index, &field)) or None if not found
-        // todo!("implement field_by_name lookup")
+    /// Look up a field by name. Returns the index and a reference to the Column.
+    pub fn field_by_name(&self, name: &str) -> Option<(usize, &Column)> {
         self.lookup.get(name).map(|idx| (*idx, &self.fields[*idx]))
     }
 }
@@ -69,29 +84,45 @@ mod tests {
 
     fn sample_schema() -> Schema {
         Schema::new(vec![
-            Field::new("id", DataType::Int),
-            Field::new("name", DataType::Str),
-            Field::new("active", DataType::Bool),
+            Column::new("id", DataType::Int),
+            Column::new("name", DataType::Str),
+            Column::new("active", DataType::Bool),
         ])
     }
 
-    // ── Field ──────────────────────────────────────────
+    #[test]
+    fn column_new_defaults() {
+        let c = Column::new("age", DataType::Int);
+        assert_eq!(c.name, "age");
+        assert_eq!(c.data_type, DataType::Int);
+        assert!(c.nullable);
+        assert!(!c.is_pk);
+        assert_eq!(c.col_pos, 0);
+    }
 
     #[test]
-    fn field_new() {
-        let f = Field::new("age", DataType::Int);
-        assert_eq!(f.name, "age");
-        assert_eq!(f.data_type, DataType::Int);
+    fn column_builder_methods() {
+        let c = Column::new("id", DataType::Int)
+            .with_pk(true)
+            .with_nullable(false)
+            .with_pos(0);
+        assert!(c.is_pk);
+        assert!(!c.nullable);
+        assert_eq!(c.col_pos, 0);
+    }
+
+    #[test]
+    fn field_alias_works() {
+        let f = Field::new("x", DataType::Float);
+        assert_eq!(f.name, "x");
     }
 
     #[test]
     fn field_clone_eq() {
-        let f = Field::new("x", DataType::Float);
+        let f = Column::new("x", DataType::Float);
         assert_eq!(f.clone(), f);
-        assert_ne!(f, Field::new("y", DataType::Float));
+        assert_ne!(f, Column::new("y", DataType::Float));
     }
-
-    // ── Schema::new ────────────────────────────────────
 
     #[test]
     fn schema_stores_fields_in_order() {
@@ -108,22 +139,20 @@ mod tests {
         assert!(s.lookup.is_empty());
     }
 
-    // ── field_by_name ──────────────────────────────────
-
     #[test]
     fn field_by_name_found() {
         let s = sample_schema();
-        let (idx, field) = s.field_by_name("name").unwrap();
+        let (idx, col) = s.field_by_name("name").unwrap();
         assert_eq!(idx, 1);
-        assert_eq!(field.data_type, DataType::Str);
+        assert_eq!(col.data_type, DataType::Str);
     }
 
     #[test]
     fn field_by_name_first_field() {
         let s = sample_schema();
-        let (idx, field) = s.field_by_name("id").unwrap();
+        let (idx, col) = s.field_by_name("id").unwrap();
         assert_eq!(idx, 0);
-        assert_eq!(field.data_type, DataType::Int);
+        assert_eq!(col.data_type, DataType::Int);
     }
 
     #[test]
@@ -145,8 +174,6 @@ mod tests {
         assert!(s.field_by_name("anything").is_none());
     }
 
-    // ── lookup map ─────────────────────────────────────
-
     #[test]
     fn lookup_has_all_fields() {
         let s = sample_schema();
@@ -155,8 +182,6 @@ mod tests {
         assert_eq!(s.lookup["name"], 1);
         assert_eq!(s.lookup["active"], 2);
     }
-
-    // ── Schema Clone / Eq ──────────────────────────────
 
     #[test]
     fn schema_clone_eq() {
