@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use storage::engine::RocksEngine;
 use storage::{Catalog, RocksStorage, StorageRead, StorageWrite};
 
+mod pretty_print;
+
 fn main() {
     let db_path = std::env::args()
         .nth(1)
@@ -130,10 +132,10 @@ fn handle_sql(sql: &str, storage: &mut RocksStorage, catalog: &mut HashMap<Strin
 
             if is_explain {
                 println!("Logical Plan:");
-                print_logical_plan(&plan_to_use, 0);
+                pretty_print::print_logical(&plan_to_use);
                 if let Some(ref pp) = physical {
                     println!("\nPhysical Plan:");
-                    print_physical_plan(pp, 0);
+                    pretty_print::print_physical(pp);
                 } else {
                     println!("\n(Physical planner not yet implemented)");
                 }
@@ -223,131 +225,6 @@ fn logical_to_physical(
             fetch: *fetch,
             input: Box::new(logical_to_physical(input)),
         },
-    }
-}
-
-fn print_logical_plan(plan: &expr::logical_plan::plan::LogicalPlan, indent: usize) {
-    use expr::logical_plan::plan::LogicalPlan;
-    let pad = "  ".repeat(indent);
-    match plan {
-        LogicalPlan::Scan { table_name, .. } => println!("{}Scan: {}", pad, table_name),
-        LogicalPlan::Filter { predicate, input } => {
-            println!("{}Filter: {}", pad, predicate);
-            print_logical_plan(input, indent + 1);
-        }
-        LogicalPlan::Projection { exprs, input } => {
-            let cols: Vec<String> = exprs.iter().map(|e| format!("{}", e)).collect();
-            println!("{}Projection: {}", pad, cols.join(", "));
-            print_logical_plan(input, indent + 1);
-        }
-        LogicalPlan::Join {
-            left,
-            right,
-            on,
-            join_type,
-            ..
-        } => {
-            println!("{}Join ({:?}) ON {}", pad, join_type, on);
-            print_logical_plan(left, indent + 1);
-            print_logical_plan(right, indent + 1);
-        }
-        LogicalPlan::Sort { exprs, input } => {
-            let cols: Vec<String> = exprs.iter().map(|e| format!("{}", e)).collect();
-            println!("{}Sort: {}", pad, cols.join(", "));
-            print_logical_plan(input, indent + 1);
-        }
-        LogicalPlan::Aggregate {
-            group_by,
-            aggr_exprs,
-            input,
-        } => {
-            let groups: Vec<String> = group_by.iter().map(|e| format!("{}", e)).collect();
-            let aggs: Vec<String> = aggr_exprs.iter().map(|e| format!("{}", e)).collect();
-            println!(
-                "{}Aggregate: group_by=[{}], aggs=[{}]",
-                pad,
-                groups.join(", "),
-                aggs.join(", ")
-            );
-            print_logical_plan(input, indent + 1);
-        }
-        LogicalPlan::Limit { skip, fetch, input } => {
-            println!("{}Limit: skip={}, fetch={}", pad, skip, fetch);
-            print_logical_plan(input, indent + 1);
-        }
-    }
-}
-
-fn print_physical_plan(plan: &physical_plan::plan::PhysicalPlan, indent: usize) {
-    use physical_plan::plan::PhysicalPlan;
-    let pad = "  ".repeat(indent);
-    match plan {
-        PhysicalPlan::TableScan { table_name, .. } => {
-            println!("{}TableScan: {}", pad, table_name)
-        }
-        PhysicalPlan::Filter { predicate, input } => {
-            println!("{}Filter: {}", pad, predicate);
-            print_physical_plan(input, indent + 1);
-        }
-        PhysicalPlan::Projection { exprs, input } => {
-            let cols: Vec<String> = exprs.iter().map(|e| format!("{}", e)).collect();
-            println!("{}Projection: {}", pad, cols.join(", "));
-            print_physical_plan(input, indent + 1);
-        }
-        PhysicalPlan::NestedLoopJoin {
-            left,
-            right,
-            on,
-            join_type,
-        } => {
-            println!("{}NestedLoopJoin ({:?}) ON {}", pad, join_type, on);
-            print_physical_plan(left, indent + 1);
-            print_physical_plan(right, indent + 1);
-        }
-        PhysicalPlan::Sort { exprs, input } => {
-            let cols: Vec<String> = exprs.iter().map(|e| format!("{}", e)).collect();
-            println!("{}Sort: {}", pad, cols.join(", "));
-            print_physical_plan(input, indent + 1);
-        }
-        PhysicalPlan::HashAggregate {
-            group_by,
-            aggr_exprs,
-            input,
-        } => {
-            let groups: Vec<String> = group_by.iter().map(|e| format!("{}", e)).collect();
-            let aggs: Vec<String> = aggr_exprs.iter().map(|e| format!("{}", e)).collect();
-            println!(
-                "{}HashAggregate: group_by=[{}], aggs=[{}]",
-                pad,
-                groups.join(", "),
-                aggs.join(", ")
-            );
-            print_physical_plan(input, indent + 1);
-        }
-        PhysicalPlan::SortAggregate {
-            group_by,
-            aggr_exprs,
-            input,
-        } => {
-            let groups: Vec<String> = group_by.iter().map(|e| format!("{}", e)).collect();
-            let aggs: Vec<String> = aggr_exprs.iter().map(|e| format!("{}", e)).collect();
-            println!(
-                "{}SortAggregate: group_by=[{}], aggs=[{}]",
-                pad,
-                groups.join(", "),
-                aggs.join(", ")
-            );
-            print_physical_plan(input, indent + 1);
-        }
-        PhysicalPlan::ScalarAggregate { aggr_exprs, input } => {
-            let aggs: Vec<String> = aggr_exprs.iter().map(|e| format!("{}", e)).collect();
-            println!("{}ScalarAggregate: aggs=[{}]", pad, aggs.join(", "));
-            print_physical_plan(input, indent + 1);
-        }
-        PhysicalPlan::Limit { skip, fetch, input } => {
-            println!("{}Limit: skip={}, fetch={}", pad, skip, fetch);
-            print_physical_plan(input, indent + 1);
-        }
     }
 }
 
