@@ -3,13 +3,13 @@
 // Simple HashMap-based storage for tables. Each table is a Vec of rows.
 
 use expr::schema::Schema;
-use expr::types::Value;
+use expr::types::FieldValue;
 use std::collections::HashMap;
 
 /// A named table with a schema and row data.
 pub struct InMemoryTable {
     pub schema: Schema,
-    pub rows: Vec<Vec<Value>>,
+    pub rows: Vec<Vec<FieldValue>>,
 }
 
 /// A collection of named tables — the "database" for the in-memory engine.
@@ -29,7 +29,7 @@ impl InMemoryDataStore {
         &mut self,
         name: impl Into<String>,
         schema: Schema,
-        rows: Vec<Vec<Value>>,
+        rows: Vec<Vec<FieldValue>>,
     ) {
         self.tables.insert(
             name.into(),

@@ -1,6 +1,6 @@
 use expr::expr::{AggFunc, Expr};
 use expr::schema::{Field, Schema};
-use expr::types::{DataType, Value};
+use expr::types::{DataType, FieldValue};
 use physical_plan::plan::PhysicalPlan;
 
 use crate::evaluator::cmp_values;
@@ -55,20 +55,20 @@ pub fn plan_schema(plan: &PhysicalPlan) -> Schema {
 }
 
 /// Compute an aggregate function over a slice of values.
-pub fn compute_aggregate(fun: &AggFunc, vals: &[&Value]) -> Value {
+pub fn compute_aggregate(fun: &AggFunc, vals: &[&FieldValue]) -> FieldValue {
     match fun {
-        AggFunc::Count => Value::Int(vals.iter().filter(|v| ***v != Value::Null).count() as i64),
+        AggFunc::Count => FieldValue::Int(vals.iter().filter(|v| ***v != FieldValue::Null).count() as i64),
         AggFunc::Sum => {
             let mut sum = 0i64;
             let mut has_float = false;
             let mut fsum = 0.0f64;
             for v in vals {
                 match v {
-                    Value::Int(i) => {
+                    FieldValue::Int(i) => {
                         sum += i;
                         fsum += *i as f64;
                     }
-                    Value::Float(f) => {
+                    FieldValue::Float(f) => {
                         has_float = true;
                         fsum += f;
                     }
@@ -76,33 +76,33 @@ pub fn compute_aggregate(fun: &AggFunc, vals: &[&Value]) -> Value {
                 }
             }
             if has_float {
-                Value::Float(fsum)
+                FieldValue::Float(fsum)
             } else {
-                Value::Int(sum)
+                FieldValue::Int(sum)
             }
         }
         AggFunc::Min => vals
             .iter()
-            .filter(|v| ***v != Value::Null)
+            .filter(|v| ***v != FieldValue::Null)
             .min_by(|a, b| cmp_values(a, b))
             .map(|v| (*v).clone())
-            .unwrap_or(Value::Null),
+            .unwrap_or(FieldValue::Null),
         AggFunc::Max => vals
             .iter()
-            .filter(|v| ***v != Value::Null)
+            .filter(|v| ***v != FieldValue::Null)
             .max_by(|a, b| cmp_values(a, b))
             .map(|v| (*v).clone())
-            .unwrap_or(Value::Null),
+            .unwrap_or(FieldValue::Null),
         AggFunc::Avg => {
             let mut sum = 0.0f64;
             let mut count = 0;
             for v in vals {
                 match v {
-                    Value::Int(i) => {
+                    FieldValue::Int(i) => {
                         sum += *i as f64;
                         count += 1;
                     }
-                    Value::Float(f) => {
+                    FieldValue::Float(f) => {
                         sum += f;
                         count += 1;
                     }
@@ -110,9 +110,9 @@ pub fn compute_aggregate(fun: &AggFunc, vals: &[&Value]) -> Value {
                 }
             }
             if count > 0 {
-                Value::Float(sum / count as f64)
+                FieldValue::Float(sum / count as f64)
             } else {
-                Value::Null
+                FieldValue::Null
             }
         }
     }

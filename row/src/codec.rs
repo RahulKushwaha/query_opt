@@ -1,5 +1,5 @@
 use expr::schema::Schema;
-use expr::types::Value;
+use expr::types::FieldValue;
 
 use crate::encoding::{decode_value, decode_value_with_len, encode_value};
 use crate::types::{RowKey, RowValue};
@@ -34,7 +34,7 @@ impl RowCodec {
     }
 
     /// Encode a full row (all columns in schema order) into key + value.
-    pub fn encode(&self, values: &[Value]) -> (RowKey, RowValue) {
+    pub fn encode(&self, values: &[FieldValue]) -> (RowKey, RowValue) {
         let n = self.pk_positions.len();
 
         // Encode PK columns into key.
@@ -63,7 +63,7 @@ impl RowCodec {
     }
 
     /// Decode key + value back into a full row of Values (schema order).
-    pub fn decode(&self, key: &RowKey, value: &RowValue, schema: &Schema) -> Vec<Value> {
+    pub fn decode(&self, key: &RowKey, value: &RowValue, schema: &Schema) -> Vec<FieldValue> {
         let n = self.pk_positions.len();
         let total = schema.fields.len();
 
@@ -100,7 +100,7 @@ impl RowCodec {
         }
 
         // Reassemble in schema order.
-        let mut result = vec![Value::Null; total];
+        let mut result = vec![FieldValue::Null; total];
         for (idx, v) in pk_values {
             result[idx] = v;
         }
@@ -140,7 +140,7 @@ mod tests {
     use super::*;
     use crate::encoding::decode_value;
     use expr::schema::{Field, Schema};
-    use expr::types::{DataType, Value};
+    use expr::types::{DataType, FieldValue};
 
     fn employee_schema() -> Schema {
         Schema::new(vec![
@@ -158,12 +158,12 @@ mod tests {
         let schema = employee_schema();
         let codec = RowCodec::new(3);
         let row = vec![
-            Value::Int(10),
-            Value::Int(42),
-            Value::Str("alice".into()),
-            Value::Int(95000),
-            Value::Str("alice@co.com".into()),
-            Value::Bool(true),
+            FieldValue::Int(10),
+            FieldValue::Int(42),
+            FieldValue::Str("alice".into()),
+            FieldValue::Int(95000),
+            FieldValue::Str("alice@co.com".into()),
+            FieldValue::Bool(true),
         ];
 
         let (key, val) = codec.encode(&row);
@@ -178,7 +178,7 @@ mod tests {
             Field::new("name", DataType::Str),
         ]);
         let codec = RowCodec::new(1);
-        let row = vec![Value::Int(7), Value::Str("bob".into())];
+        let row = vec![FieldValue::Int(7), FieldValue::Str("bob".into())];
 
         let (key, val) = codec.encode(&row);
         let decoded = codec.decode(&key, &val, &schema);
@@ -195,9 +195,9 @@ mod tests {
         ]);
         let codec = RowCodec::from_pk_positions(vec![2]);
         let row = vec![
-            Value::Str("alice".into()),
-            Value::Int(30),
-            Value::Str("alice@co.com".into()),
+            FieldValue::Str("alice".into()),
+            FieldValue::Int(30),
+            FieldValue::Str("alice@co.com".into()),
         ];
 
         let (key, val) = codec.encode(&row);
@@ -215,9 +215,9 @@ mod tests {
         ]);
         let codec = RowCodec::from_pk_positions(vec![0, 2]);
         let row = vec![
-            Value::Int(10),
-            Value::Str("alice".into()),
-            Value::Int(42),
+            FieldValue::Int(10),
+            FieldValue::Str("alice".into()),
+            FieldValue::Int(42),
         ];
 
         let (key, val) = codec.encode(&row);
@@ -229,24 +229,24 @@ mod tests {
     fn read_pk_column_direct() {
         let codec = RowCodec::new(3);
         let row = vec![
-            Value::Int(10),
-            Value::Int(42),
-            Value::Str("alice".into()),
-            Value::Int(95000),
-            Value::Str("alice@co.com".into()),
-            Value::Bool(true),
+            FieldValue::Int(10),
+            FieldValue::Int(42),
+            FieldValue::Str("alice".into()),
+            FieldValue::Int(95000),
+            FieldValue::Str("alice@co.com".into()),
+            FieldValue::Bool(true),
         ];
 
         let (key, _) = codec.encode(&row);
 
         let col0 = codec.read_pk_column(&key, 0);
-        assert_eq!(decode_value(col0, &DataType::Int), Value::Int(10));
+        assert_eq!(decode_value(col0, &DataType::Int), FieldValue::Int(10));
 
         let col1 = codec.read_pk_column(&key, 1);
-        assert_eq!(decode_value(col1, &DataType::Int), Value::Int(42));
+        assert_eq!(decode_value(col1, &DataType::Int), FieldValue::Int(42));
 
         let col2 = codec.read_pk_column(&key, 2);
-        assert_eq!(decode_value(col2, &DataType::Str), Value::Str("alice".into()));
+        assert_eq!(decode_value(col2, &DataType::Str), FieldValue::Str("alice".into()));
     }
 
     #[test]
@@ -256,7 +256,7 @@ mod tests {
             Field::new("val", DataType::Str),
         ]);
         let codec = RowCodec::new(1);
-        let row = vec![Value::Int(1), Value::Null];
+        let row = vec![FieldValue::Int(1), FieldValue::Null];
 
         let (key, val) = codec.encode(&row);
         let decoded = codec.decode(&key, &val, &schema);
@@ -267,8 +267,8 @@ mod tests {
     fn offset_array_size() {
         let codec = RowCodec::new(3);
         let row = vec![
-            Value::Int(1), Value::Int(2), Value::Str("x".into()),
-            Value::Bool(false),
+            FieldValue::Int(1), FieldValue::Int(2), FieldValue::Str("x".into()),
+            FieldValue::Bool(false),
         ];
         let (key, _) = codec.encode(&row);
         // 2 offsets × 2 bytes = 4, col0: 9, col1: 9, col2: 4 = 26

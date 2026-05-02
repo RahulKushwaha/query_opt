@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use expr::expr::{Expr, Operator};
 use expr::logical_plan::JoinType;
 use expr::schema::Schema;
-use expr::types::Value;
+use expr::types::FieldValue;
 use physical_plan::plan::PhysicalPlan;
 
 use crate::engine::{ExecutionEngine, ExecutionError, ResultSet, Row};
@@ -58,7 +58,7 @@ pub fn execute_plan(source: &dyn DataSource, plan: &PhysicalPlan) -> Result<Resu
             let rows = execute_plan(source, input)?;
             Ok(rows
                 .into_iter()
-                .filter(|row| matches!(eval(predicate, row, &schema), Ok(Value::Bool(true))))
+                .filter(|row| matches!(eval(predicate, row, &schema), Ok(FieldValue::Bool(true))))
                 .collect())
         }
 
@@ -87,8 +87,8 @@ pub fn execute_plan(source: &dyn DataSource, plan: &PhysicalPlan) -> Result<Resu
             let mut rows = execute_plan(source, input)?;
             rows.sort_by(|a, b| {
                 for e in exprs {
-                    let va = eval(e, a, &schema).unwrap_or(Value::Null);
-                    let vb = eval(e, b, &schema).unwrap_or(Value::Null);
+                    let va = eval(e, a, &schema).unwrap_or(FieldValue::Null);
+                    let vb = eval(e, b, &schema).unwrap_or(FieldValue::Null);
                     let ord = cmp_values(&va, &vb);
                     if ord != std::cmp::Ordering::Equal {
                         return ord;
@@ -123,8 +123,8 @@ fn execute_join(
     combined_fields.extend(right_schema.fields.clone());
     let combined_schema = Schema::new(combined_fields);
 
-    let null_right: Row = vec![Value::Null; right_schema.fields.len()];
-    let null_left: Row = vec![Value::Null; left_schema.fields.len()];
+    let null_right: Row = vec![FieldValue::Null; right_schema.fields.len()];
+    let null_left: Row = vec![FieldValue::Null; left_schema.fields.len()];
     let mut result = Vec::new();
 
     match join_type {
@@ -133,7 +133,7 @@ fn execute_join(
                 for rr in &right_rows {
                     let mut combined = lr.clone();
                     combined.extend(rr.clone());
-                    if let Ok(Value::Bool(true)) = eval(on, &combined, &combined_schema) {
+                    if let Ok(FieldValue::Bool(true)) = eval(on, &combined, &combined_schema) {
                         result.push(combined);
                     }
                 }
@@ -145,7 +145,7 @@ fn execute_join(
                 for rr in &right_rows {
                     let mut combined = lr.clone();
                     combined.extend(rr.clone());
-                    if let Ok(Value::Bool(true)) = eval(on, &combined, &combined_schema) {
+                    if let Ok(FieldValue::Bool(true)) = eval(on, &combined, &combined_schema) {
                         result.push(combined);
                         matched = true;
                     }
@@ -163,7 +163,7 @@ fn execute_join(
                 for lr in &left_rows {
                     let mut combined = lr.clone();
                     combined.extend(rr.clone());
-                    if let Ok(Value::Bool(true)) = eval(on, &combined, &combined_schema) {
+                    if let Ok(FieldValue::Bool(true)) = eval(on, &combined, &combined_schema) {
                         result.push(combined);
                         matched = true;
                     }
@@ -182,7 +182,7 @@ fn execute_join(
                 for (ri, rr) in right_rows.iter().enumerate() {
                     let mut combined = lr.clone();
                     combined.extend(rr.clone());
-                    if let Ok(Value::Bool(true)) = eval(on, &combined, &combined_schema) {
+                    if let Ok(FieldValue::Bool(true)) = eval(on, &combined, &combined_schema) {
                         result.push(combined);
                         left_matched = true;
                         right_matched[ri] = true;
@@ -215,39 +215,38 @@ fn execute_aggregate(
     let schema = plan_schema(input);
     let rows = execute_plan(source, input)?;
 
-    let mut groups: HashMap<Vec<u8>, (Row, Vec<Vec<Value>>)> = HashMap::new();
+    let mut groups: HashMap<Vec<FieldValue>, Vec<Vec<FieldValue>>> = HashMap::new();
     for row in &rows {
-        let key_vals: Vec<Value> = group_by
+        let key_vals: Vec<FieldValue> = group_by
             .iter()
-            .map(|e| eval(e, row, &schema).unwrap_or(Value::Null))
+            .map(|e| eval(e, row, &schema).unwrap_or(FieldValue::Null))
             .collect();
-        let key_bytes = format!("{:?}", key_vals).into_bytes();
         let entry = groups
-            .entry(key_bytes)
-            .or_insert_with(|| (key_vals.clone(), Vec::new()));
-        let agg_inputs: Vec<Value> = aggr_exprs
+            .entry(key_vals)
+            .or_insert_with(Vec::new);
+        let agg_inputs: Vec<FieldValue> = aggr_exprs
             .iter()
             .map(|e| match e {
                 Expr::AggregateFunction { args, .. } => args
                     .first()
-                    .map(|a| eval(a, row, &schema).unwrap_or(Value::Null))
-                    .unwrap_or(Value::Null),
-                _ => eval(e, row, &schema).unwrap_or(Value::Null),
+                    .map(|a| eval(a, row, &schema).unwrap_or(FieldValue::Null))
+                    .unwrap_or(FieldValue::Null),
+                _ => eval(e, row, &schema).unwrap_or(FieldValue::Null),
             })
             .collect();
-        entry.1.push(agg_inputs);
+        entry.push(agg_inputs);
     }
 
     let mut result = Vec::new();
-    for (_key, (group_vals, agg_rows)) in groups {
+    for (group_vals, agg_rows) in groups {
         let mut out_row = group_vals;
         for (ai, agg_expr) in aggr_exprs.iter().enumerate() {
             let val = match agg_expr {
                 Expr::AggregateFunction { fun, .. } => {
-                    let vals: Vec<&Value> = agg_rows.iter().map(|r| &r[ai]).collect();
+                    let vals: Vec<&FieldValue> = agg_rows.iter().map(|r| &r[ai]).collect();
                     compute_aggregate(fun, &vals)
                 }
-                _ => Value::Null,
+                _ => FieldValue::Null,
             };
             out_row.push(val);
         }
@@ -276,9 +275,9 @@ mod tests {
                 Field::new("score", DataType::Int),
             ]),
             vec![
-                vec![Value::Int(1), Value::Str("alice".into()), Value::Int(90)],
-                vec![Value::Int(2), Value::Str("bob".into()), Value::Int(75)],
-                vec![Value::Int(3), Value::Str("carol".into()), Value::Int(90)],
+                vec![FieldValue::Int(1), FieldValue::Str("alice".into()), FieldValue::Int(90)],
+                vec![FieldValue::Int(2), FieldValue::Str("bob".into()), FieldValue::Int(75)],
+                vec![FieldValue::Int(3), FieldValue::Str("carol".into()), FieldValue::Int(90)],
             ],
         );
         GenericEngine::new(ds)
@@ -310,7 +309,7 @@ mod tests {
             predicate: Expr::BinaryExpr {
                 left: Box::new(Expr::Column("score".into())),
                 op: Operator::Gt,
-                right: Box::new(Expr::Literal(Value::Int(80))),
+                right: Box::new(Expr::Literal(FieldValue::Int(80))),
             },
             input: Box::new(PhysicalPlan::TableScan {
                 table_name: "users".into(),
@@ -333,7 +332,7 @@ mod tests {
         };
         let rows = engine.execute(&plan).unwrap();
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0], vec![Value::Str("alice".into())]);
+        assert_eq!(rows[0], vec![FieldValue::Str("alice".into())]);
     }
 
     #[test]
@@ -347,9 +346,9 @@ mod tests {
             }),
         };
         let rows = engine.execute(&plan).unwrap();
-        assert_eq!(rows[0][1], Value::Str("alice".into()));
-        assert_eq!(rows[1][1], Value::Str("bob".into()));
-        assert_eq!(rows[2][1], Value::Str("carol".into()));
+        assert_eq!(rows[0][1], FieldValue::Str("alice".into()));
+        assert_eq!(rows[1][1], FieldValue::Str("bob".into()));
+        assert_eq!(rows[2][1], FieldValue::Str("carol".into()));
     }
 
     #[test]

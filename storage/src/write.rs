@@ -3,7 +3,7 @@
 //! Handles row insertion with automatic primary key encoding and
 //! secondary index maintenance.
 
-use expr::types::Value;
+use expr::types::FieldValue;
 use row::RowCodec;
 
 use crate::table::Table;
@@ -26,11 +26,11 @@ pub trait StorageWrite {
     ///
     /// Any existing secondary indexes on the table are updated
     /// automatically.
-    fn insert_row(&self, table: &Table, row: Vec<Value>);
+    fn insert_row(&self, table: &Table, row: Vec<FieldValue>);
 }
 
 impl StorageWrite for RocksStorage {
-    fn insert_row(&self, table: &Table, row: Vec<Value>) {
+    fn insert_row(&self, table: &Table, row: Vec<FieldValue>) {
         let name = table.name();
         let pk_cols = table.pk_columns();
         let cf = self.db.cf_handle(&name).expect("table CF not found");

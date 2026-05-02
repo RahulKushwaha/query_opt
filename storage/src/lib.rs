@@ -11,7 +11,7 @@ pub use read::StorageRead;
 pub use write::StorageWrite;
 
 use expr::schema::{Field, Schema};
-use expr::types::{DataType, Value};
+use expr::types::{DataType, FieldValue};
 use rocksdb::{ColumnFamilyDescriptor, Options, DB};
 use row::RowCodec;
 use row::types::RowKey;
@@ -134,19 +134,19 @@ impl RocksStorage {
             let values = codec.decode(&rk, &rv, &schema);
 
             let table_name = match &values[0] {
-                Value::Str(s) => s.clone(),
+                FieldValue::Str(s) => s.clone(),
                 _ => continue,
             };
             let next_row_id = match &values[1] {
-                Value::Int(i) => *i as u64,
+                FieldValue::Int(i) => *i as u64,
                 _ => 0,
             };
             let schema_str = match &values[2] {
-                Value::Str(s) => s.as_str(),
+                FieldValue::Str(s) => s.as_str(),
                 _ => "",
             };
             let indexes_str = match &values[3] {
-                Value::Str(s) => s.as_str(),
+                FieldValue::Str(s) => s.as_str(),
                 _ => "",
             };
 
@@ -162,17 +162,17 @@ impl RocksStorage {
         let cf = self.db.cf_handle(META_CF).unwrap();
         let codec = meta_codec();
         let values = vec![
-            Value::Str(table_name.to_string()),
-            Value::Int(meta.next_row_id as i64),
-            Value::Str(meta.encode_schema_str()),
-            Value::Str(meta.encode_indexes_str()),
+            FieldValue::Str(table_name.to_string()),
+            FieldValue::Int(meta.next_row_id as i64),
+            FieldValue::Str(meta.encode_schema_str()),
+            FieldValue::Str(meta.encode_indexes_str()),
         ];
         let (rk, rv) = codec.encode(&values);
         self.db.put_cf(cf, &rk.0, &rv.0).unwrap();
     }
 
     /// Encode a data row into bytes using the row format.
-    pub(crate) fn encode_data_row(values: &[Value]) -> Vec<u8> {
+    pub(crate) fn encode_data_row(values: &[FieldValue]) -> Vec<u8> {
         let mut buf = Vec::new();
         for v in values {
             row::encoding::encode_value(v, &mut buf);
@@ -181,7 +181,7 @@ impl RocksStorage {
     }
 
     /// Decode a data row from bytes using the row format (no PK split).
-    pub(crate) fn decode_data_row(bytes: &[u8], schema: &Schema) -> Vec<Value> {
+    pub(crate) fn decode_data_row(bytes: &[u8], schema: &Schema) -> Vec<FieldValue> {
         let mut result = Vec::with_capacity(schema.fields.len());
         let mut pos = 0;
         for field in &schema.fields {
@@ -195,7 +195,7 @@ impl RocksStorage {
     /// Decode a DataRow using the table's PK info.
     /// If the table has PK columns, uses RowCodec to decode key + value.
     /// Otherwise, decodes all columns from the value bytes.
-    pub fn decode_datarow(dr: &row::DataRow, table: &crate::table::Table) -> Vec<Value> {
+    pub fn decode_datarow(dr: &row::DataRow, table: &crate::table::Table) -> Vec<FieldValue> {
         let schema = table.schema();
         let pk_cols = table.pk_columns();
         if !pk_cols.is_empty() {
@@ -212,24 +212,24 @@ impl RocksStorage {
     }
 
     /// Encode just the value portion of an index key (no pk suffix).
-    pub fn encode_index_prefix(value: &Value) -> RowKey {
+    pub fn encode_index_prefix(value: &FieldValue) -> RowKey {
         let full = Self::encode_index_key(value, &[]);
         RowKey(full[..full.len() - 2].to_vec())
     }
 
-    pub(crate) fn encode_index_key(value: &Value, pk_bytes: &[u8]) -> Vec<u8> {
+    pub(crate) fn encode_index_key(value: &FieldValue, pk_bytes: &[u8]) -> Vec<u8> {
         let mut key = Vec::new();
         match value {
-            Value::Null => key.push(0),
-            Value::Bool(b) => {
+            FieldValue::Null => key.push(0),
+            FieldValue::Bool(b) => {
                 key.push(1);
                 key.push(if *b { 1 } else { 0 });
             }
-            Value::Int(i) => {
+            FieldValue::Int(i) => {
                 key.push(2);
                 key.extend_from_slice(&((*i as u64) ^ (1u64 << 63)).to_be_bytes());
             }
-            Value::Float(f) => {
+            FieldValue::Float(f) => {
                 key.push(3);
                 let bits = f.to_bits();
                 let ordered = if *f >= 0.0 {
@@ -239,7 +239,7 @@ impl RocksStorage {
                 };
                 key.extend_from_slice(&ordered.to_be_bytes());
             }
-            Value::Str(s) => {
+            FieldValue::Str(s) => {
                 key.push(4);
                 key.extend_from_slice(s.as_bytes());
                 key.push(0);
@@ -251,7 +251,7 @@ impl RocksStorage {
         key
     }
 
-    pub(crate) fn write_index_entry(&self, table: &str, column: &str, value: &Value, pk_bytes: &[u8]) {
+    pub(crate) fn write_index_entry(&self, table: &str, column: &str, value: &FieldValue, pk_bytes: &[u8]) {
         let cf_name = Self::index_cf_name(table, column);
         if let Some(cf) = self.db.cf_handle(&cf_name) {
             let key = Self::encode_index_key(value, pk_bytes);
@@ -266,7 +266,7 @@ mod tests {
     use super::*;
     use crate::materializer::Materializer;
     use expr::schema::{Field, Schema};
-    use expr::types::{DataType, Value};
+    use expr::types::{DataType, FieldValue};
     use tempfile::tempdir;
 
     fn test_schema() -> Schema {
@@ -277,7 +277,7 @@ mod tests {
         ])
     }
 
-    fn decode_rows(rows: &[row::DataRow], table: &crate::table::Table) -> Vec<Vec<Value>> {
+    fn decode_rows(rows: &[row::DataRow], table: &crate::table::Table) -> Vec<Vec<FieldValue>> {
         rows.iter().map(|dr| RocksStorage::decode_datarow(dr, table)).collect()
     }
 
@@ -288,14 +288,14 @@ mod tests {
         storage.create_table("users", &test_schema());
         let t = storage.get_table("users").unwrap();
 
-        storage.insert_row(&t, vec![Value::Int(1), Value::Str("alice".into()), Value::Int(90)]);
-        storage.insert_row(&t, vec![Value::Int(2), Value::Str("bob".into()), Value::Int(75)]);
+        storage.insert_row(&t, vec![FieldValue::Int(1), FieldValue::Str("alice".into()), FieldValue::Int(90)]);
+        storage.insert_row(&t, vec![FieldValue::Int(2), FieldValue::Str("bob".into()), FieldValue::Int(75)]);
 
         let data_rows = storage.scan(&t, None, None);
         let rows = decode_rows(&data_rows, &t);
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0][1], Value::Str("alice".into()));
-        assert_eq!(rows[1][2], Value::Int(75));
+        assert_eq!(rows[0][1], FieldValue::Str("alice".into()));
+        assert_eq!(rows[1][2], FieldValue::Int(75));
     }
 
     #[test]
@@ -304,13 +304,13 @@ mod tests {
         let mut storage = RocksStorage::new(dir.path());
         storage.create_table("t", &test_schema());
         let t = storage.get_table("t").unwrap();
-        storage.insert_row(&t, vec![Value::Int(1), Value::Str("a".into()), Value::Int(10)]);
+        storage.insert_row(&t, vec![FieldValue::Int(1), FieldValue::Str("a".into()), FieldValue::Int(10)]);
 
         let all = storage.scan(&t, None, None);
         let key = &all[0].key;
         let found = storage.point_lookup(&t, key).unwrap();
         let row = RocksStorage::decode_datarow(&found, &t);
-        assert_eq!(row[1], Value::Str("a".into()));
+        assert_eq!(row[1], FieldValue::Str("a".into()));
     }
 
     #[test]
@@ -338,7 +338,7 @@ mod tests {
     }
 
     /// Helper: compute [start, end) for Eq on an index value.
-    fn eq_bounds(val: &Value) -> (row::types::RowKey, Option<row::types::RowKey>) {
+    fn eq_bounds(val: &FieldValue) -> (row::types::RowKey, Option<row::types::RowKey>) {
         let prefix = RocksStorage::encode_index_prefix(val);
         let mut next = prefix.0.clone();
         let has_next = {
@@ -359,14 +359,14 @@ mod tests {
         storage.create_table("t", &test_schema());
         let t = storage.get_table("t").unwrap();
 
-        storage.insert_row(&t, vec![Value::Int(1), Value::Str("a".into()), Value::Int(10)]);
-        storage.insert_row(&t, vec![Value::Int(2), Value::Str("b".into()), Value::Int(20)]);
-        storage.insert_row(&t, vec![Value::Int(3), Value::Str("c".into()), Value::Int(10)]);
+        storage.insert_row(&t, vec![FieldValue::Int(1), FieldValue::Str("a".into()), FieldValue::Int(10)]);
+        storage.insert_row(&t, vec![FieldValue::Int(2), FieldValue::Str("b".into()), FieldValue::Int(20)]);
+        storage.insert_row(&t, vec![FieldValue::Int(3), FieldValue::Str("c".into()), FieldValue::Int(10)]);
 
         storage.create_index("t", "score");
         let t = storage.get_table("t").unwrap();
 
-        let (start, end) = eq_bounds(&Value::Int(10));
+        let (start, end) = eq_bounds(&FieldValue::Int(10));
         let keys = storage.index_scan(&t, "score", Some(&start), end.as_ref());
         assert_eq!(keys.len(), 2);
     }
@@ -378,20 +378,20 @@ mod tests {
         storage.create_table("t", &test_schema());
         let t = storage.get_table("t").unwrap();
 
-        storage.insert_row(&t, vec![Value::Int(1), Value::Str("a".into()), Value::Int(10)]);
-        storage.insert_row(&t, vec![Value::Int(2), Value::Str("b".into()), Value::Int(20)]);
-        storage.insert_row(&t, vec![Value::Int(3), Value::Str("c".into()), Value::Int(10)]);
+        storage.insert_row(&t, vec![FieldValue::Int(1), FieldValue::Str("a".into()), FieldValue::Int(10)]);
+        storage.insert_row(&t, vec![FieldValue::Int(2), FieldValue::Str("b".into()), FieldValue::Int(20)]);
+        storage.insert_row(&t, vec![FieldValue::Int(3), FieldValue::Str("c".into()), FieldValue::Int(10)]);
 
         storage.create_index("t", "score");
         let t = storage.get_table("t").unwrap();
 
-        let (start, end) = eq_bounds(&Value::Int(10));
+        let (start, end) = eq_bounds(&FieldValue::Int(10));
         let keys = storage.index_scan(&t, "score", Some(&start), end.as_ref());
         let mat = Materializer::new(&storage);
         let data_rows = mat.materialize(&t, &keys);
         let rows = decode_rows(&data_rows, &t);
         assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|r| r[2] == Value::Int(10)));
+        assert!(rows.iter().all(|r| r[2] == FieldValue::Int(10)));
     }
 
     #[test]
@@ -402,13 +402,13 @@ mod tests {
         let t = storage.get_table("t").unwrap();
 
         for i in 0..5 {
-            storage.insert_row(&t, vec![Value::Int(i), Value::Str(format!("r{}", i)), Value::Int(i * 10)]);
+            storage.insert_row(&t, vec![FieldValue::Int(i), FieldValue::Str(format!("r{}", i)), FieldValue::Int(i * 10)]);
         }
         storage.create_index("t", "score");
         let t = storage.get_table("t").unwrap();
 
         // Gt(20): start at next_prefix(20), no end
-        let (_, next) = eq_bounds(&Value::Int(20));
+        let (_, next) = eq_bounds(&FieldValue::Int(20));
         let keys = storage.index_scan(&t, "score", next.as_ref(), None);
         assert_eq!(keys.len(), 2);
     }
@@ -421,16 +421,16 @@ mod tests {
         storage.create_index("t", "score");
         let t = storage.get_table("t").unwrap();
 
-        storage.insert_row(&t, vec![Value::Int(1), Value::Str("a".into()), Value::Int(50)]);
-        storage.insert_row(&t, vec![Value::Int(2), Value::Str("b".into()), Value::Int(60)]);
+        storage.insert_row(&t, vec![FieldValue::Int(1), FieldValue::Str("a".into()), FieldValue::Int(50)]);
+        storage.insert_row(&t, vec![FieldValue::Int(2), FieldValue::Str("b".into()), FieldValue::Int(60)]);
 
-        let (start, end) = eq_bounds(&Value::Int(50));
+        let (start, end) = eq_bounds(&FieldValue::Int(50));
         let keys = storage.index_scan(&t, "score", Some(&start), end.as_ref());
         let mat = Materializer::new(&storage);
         let data_rows = mat.materialize(&t, &keys);
         let rows = decode_rows(&data_rows, &t);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0][1], Value::Str("a".into()));
+        assert_eq!(rows[0][1], FieldValue::Str("a".into()));
     }
 
     #[test]
@@ -440,7 +440,7 @@ mod tests {
             let mut storage = RocksStorage::new(dir.path());
             storage.create_table("t", &test_schema());
             let t = storage.get_table("t").unwrap();
-            storage.insert_row(&t, vec![Value::Int(1), Value::Str("a".into()), Value::Int(10)]);
+            storage.insert_row(&t, vec![FieldValue::Int(1), FieldValue::Str("a".into()), FieldValue::Int(10)]);
             storage.create_index("t", "score");
         }
         let storage = RocksStorage::new(dir.path());
@@ -462,14 +462,14 @@ mod tests {
         storage.create_table("pk_table", &schema);
         let t = storage.get_table("pk_table").unwrap();
 
-        storage.insert_row(&t, vec![Value::Int(1), Value::Str("alice".into()), Value::Int(90)]);
-        storage.insert_row(&t, vec![Value::Int(2), Value::Str("bob".into()), Value::Int(75)]);
+        storage.insert_row(&t, vec![FieldValue::Int(1), FieldValue::Str("alice".into()), FieldValue::Int(90)]);
+        storage.insert_row(&t, vec![FieldValue::Int(2), FieldValue::Str("bob".into()), FieldValue::Int(75)]);
 
         let data_rows = storage.scan(&t, None, None);
         let rows = decode_rows(&data_rows, &t);
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], vec![Value::Int(1), Value::Str("alice".into()), Value::Int(90)]);
-        assert_eq!(rows[1], vec![Value::Int(2), Value::Str("bob".into()), Value::Int(75)]);
+        assert_eq!(rows[0], vec![FieldValue::Int(1), FieldValue::Str("alice".into()), FieldValue::Int(90)]);
+        assert_eq!(rows[1], vec![FieldValue::Int(2), FieldValue::Str("bob".into()), FieldValue::Int(75)]);
     }
 
     #[test]
@@ -485,7 +485,7 @@ mod tests {
         let t = storage.get_table("t").unwrap();
 
         for i in 1..=5 {
-            storage.insert_row(&t, vec![Value::Int(i), Value::Str(format!("r{}", i))]);
+            storage.insert_row(&t, vec![FieldValue::Int(i), FieldValue::Str(format!("r{}", i))]);
         }
 
         // Full scan returns all 5.
@@ -500,8 +500,8 @@ mod tests {
         let range = storage.scan(&t, Some(key2), Some(key4));
         let rows = decode_rows(&range, &t);
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0][0], Value::Int(2));
-        assert_eq!(rows[1][0], Value::Int(3));
+        assert_eq!(rows[0][0], FieldValue::Int(2));
+        assert_eq!(rows[1][0], FieldValue::Int(3));
 
         // Start bound only: [3, ...)
         let from3 = storage.scan(&t, Some(&all[2].key), None);
@@ -523,14 +523,14 @@ mod tests {
         storage.create_table("t", &schema);
         let t = storage.get_table("t").unwrap();
 
-        storage.insert_row(&t, vec![Value::Str("alice".into()), Value::Int(30), Value::Str("a@b.com".into())]);
-        storage.insert_row(&t, vec![Value::Str("bob".into()), Value::Int(25), Value::Str("b@b.com".into())]);
+        storage.insert_row(&t, vec![FieldValue::Str("alice".into()), FieldValue::Int(30), FieldValue::Str("a@b.com".into())]);
+        storage.insert_row(&t, vec![FieldValue::Str("bob".into()), FieldValue::Int(25), FieldValue::Str("b@b.com".into())]);
 
         let data_rows = storage.scan(&t, None, None);
         let rows = decode_rows(&data_rows, &t);
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0][0], Value::Str("alice".into()));
-        assert_eq!(rows[0][1], Value::Int(30));
-        assert_eq!(rows[0][2], Value::Str("a@b.com".into()));
+        assert_eq!(rows[0][0], FieldValue::Str("alice".into()));
+        assert_eq!(rows[0][1], FieldValue::Int(30));
+        assert_eq!(rows[0][2], FieldValue::Str("a@b.com".into()));
     }
 }

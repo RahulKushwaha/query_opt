@@ -2,7 +2,7 @@ use expr::expr::{AggFunc, Expr, Operator};
 use expr::logical_plan::builder::LogicalPlanBuilder;
 use expr::logical_plan::plan::{JoinType, LogicalPlan};
 use expr::schema::{Field, Schema};
-use expr::types::{DataType, Value};
+use expr::types::{DataType, FieldValue};
 use sqlparser::ast;
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -32,7 +32,7 @@ impl fmt::Display for PlanError {
 pub enum SqlStatement {
     CreateTable { name: String, schema: Schema },
     CreateIndex { table: String, column: String },
-    Insert { table: String, rows: Vec<Vec<Value>> },
+    Insert { table: String, rows: Vec<Vec<FieldValue>> },
     Query(LogicalPlan),
 }
 
@@ -272,7 +272,7 @@ impl SqlPlanner {
                 }
                 ast::JoinOperator::CrossJoin => (
                     JoinType::Inner,
-                    Expr::Literal(Value::Bool(true)),
+                    Expr::Literal(FieldValue::Bool(true)),
                 ),
                 _ => {
                     return Err(PlanError::Unsupported("unsupported join type".into()));
@@ -292,7 +292,7 @@ impl SqlPlanner {
             plan = LogicalPlan::Join {
                 left: Box::new(plan),
                 right: Box::new(right),
-                on: Expr::Literal(Value::Bool(true)),
+                on: Expr::Literal(FieldValue::Bool(true)),
                 join_type: JoinType::Inner,
             };
         }
@@ -401,7 +401,7 @@ impl SqlPlanner {
                                 self.convert_expr(e)
                             }
                             ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Wildcard) => {
-                                Ok(Expr::Literal(Value::Int(1)))
+                                Ok(Expr::Literal(FieldValue::Int(1)))
                             }
                             _ => Err(PlanError::Unsupported("function arg".into())),
                         })
@@ -418,7 +418,7 @@ impl SqlPlanner {
             } => {
                 let inner = self.convert_expr(expr)?;
                 Ok(Expr::BinaryExpr {
-                    left: Box::new(Expr::Literal(Value::Int(0))),
+                    left: Box::new(Expr::Literal(FieldValue::Int(0))),
                     op: Operator::Minus,
                     right: Box::new(inner),
                 })
@@ -445,22 +445,22 @@ fn sql_type_to_datatype(sql_type: &ast::DataType) -> DataType {
     }
 }
 
-fn sql_ast_value_to_value(v: &ast::Value) -> Result<Value, PlanError> {
+fn sql_ast_value_to_value(v: &ast::Value) -> Result<FieldValue, PlanError> {
     match v {
         ast::Value::Number(n, _) => {
             if let Ok(i) = n.parse::<i64>() {
-                Ok(Value::Int(i))
+                Ok(FieldValue::Int(i))
             } else if let Ok(f) = n.parse::<f64>() {
-                Ok(Value::Float(f))
+                Ok(FieldValue::Float(f))
             } else {
                 Err(PlanError::Parse(format!("invalid number: {}", n)))
             }
         }
         ast::Value::SingleQuotedString(s) | ast::Value::DoubleQuotedString(s) => {
-            Ok(Value::Str(s.clone()))
+            Ok(FieldValue::Str(s.clone()))
         }
-        ast::Value::Boolean(b) => Ok(Value::Bool(*b)),
-        ast::Value::Null => Ok(Value::Null),
+        ast::Value::Boolean(b) => Ok(FieldValue::Bool(*b)),
+        ast::Value::Null => Ok(FieldValue::Null),
         _ => Err(PlanError::Unsupported(format!("value: {:?}", v))),
     }
 }
@@ -468,7 +468,7 @@ fn sql_ast_value_to_value(v: &ast::Value) -> Result<Value, PlanError> {
 fn sql_value_expr_to_value(
     expr: &ast::Expr,
     expected_type: Option<&DataType>,
-) -> Result<Value, PlanError> {
+) -> Result<FieldValue, PlanError> {
     match expr {
         ast::Expr::Value(v) => sql_ast_value_to_value(v),
         ast::Expr::UnaryOp {
@@ -477,9 +477,9 @@ fn sql_value_expr_to_value(
         } => match inner.as_ref() {
             ast::Expr::Value(ast::Value::Number(n, _)) => {
                 if let Ok(i) = n.parse::<i64>() {
-                    Ok(Value::Int(-i))
+                    Ok(FieldValue::Int(-i))
                 } else if let Ok(f) = n.parse::<f64>() {
-                    Ok(Value::Float(-f))
+                    Ok(FieldValue::Float(-f))
                 } else {
                     Err(PlanError::Parse(format!("invalid number: {}", n)))
                 }
@@ -631,7 +631,7 @@ mod tests {
             SqlStatement::Insert { table, rows } => {
                 assert_eq!(table, "t1");
                 assert_eq!(rows.len(), 2);
-                assert_eq!(rows[0], vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+                assert_eq!(rows[0], vec![FieldValue::Int(1), FieldValue::Int(2), FieldValue::Int(3)]);
             }
             _ => panic!("expected Insert"),
         }

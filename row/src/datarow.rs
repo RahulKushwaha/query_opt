@@ -1,5 +1,5 @@
 use expr::schema::Schema;
-use expr::types::Value;
+use expr::types::FieldValue;
 
 use crate::codec::RowCodec;
 use crate::types::{RowKey, RowValue};
@@ -17,7 +17,7 @@ impl DataRow {
     }
 
     /// Decode all columns (PK + non-PK) back into Values.
-    pub fn decode(&self, codec: &RowCodec, schema: &Schema) -> Vec<Value> {
+    pub fn decode(&self, codec: &RowCodec, schema: &Schema) -> Vec<FieldValue> {
         codec.decode(&self.key, &self.value, schema)
     }
 
@@ -45,7 +45,7 @@ mod tests {
             Field::new("name", DataType::Str),
         ]);
         let codec = RowCodec::new(1);
-        let values = vec![Value::Int(42), Value::Str("alice".into())];
+        let values = vec![FieldValue::Int(42), FieldValue::Str("alice".into())];
 
         let (key, val) = codec.encode(&values);
         let row = DataRow::new(key, val);
@@ -56,8 +56,8 @@ mod tests {
     #[test]
     fn datarow_compare() {
         let codec = RowCodec::new(1);
-        let (k1, v1) = codec.encode(&[Value::Int(1), Value::Str("a".into())]);
-        let (k2, v2) = codec.encode(&[Value::Int(2), Value::Str("b".into())]);
+        let (k1, v1) = codec.encode(&[FieldValue::Int(1), FieldValue::Str("a".into())]);
+        let (k2, v2) = codec.encode(&[FieldValue::Int(2), FieldValue::Str("b".into())]);
 
         let r1 = DataRow::new(k1, v1);
         let r2 = DataRow::new(k2, v2);

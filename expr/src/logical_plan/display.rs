@@ -33,7 +33,7 @@ mod tests {
     use crate::expr::{col, lit};
     use crate::logical_plan::builder::LogicalPlanBuilder;
     use crate::schema::{Field, Schema};
-    use crate::types::{DataType, Value};
+    use crate::types::{DataType, FieldValue};
 
     #[test]
     fn test_display_plan_tree() {

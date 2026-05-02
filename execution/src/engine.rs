@@ -3,12 +3,12 @@
 // This is the extension point for plugging in a custom execution engine.
 // The in-memory engine implements this trait; your future custom engine will too.
 
-use expr::types::Value;
+use expr::types::FieldValue;
 use physical_plan::plan::PhysicalPlan;
 use std::fmt;
 
-/// Rows are represented as Vec<Value>, result set is Vec of rows.
-pub type Row = Vec<Value>;
+/// Rows are represented as Vec<FieldValue>, result set is Vec of rows.
+pub type Row = Vec<FieldValue>;
 pub type ResultSet = Vec<Row>;
 
 #[derive(Debug)]

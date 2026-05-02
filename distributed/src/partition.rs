@@ -1,4 +1,4 @@
-use expr::types::Value;
+use expr::types::FieldValue;
 use std::collections::HashMap;
 
 /// How a table is partitioned across shards.
@@ -16,9 +16,9 @@ pub struct ShardInfo {
     pub shard_id: u64,
     pub address: String,
     /// Inclusive lower bound of the key range (Range partitioning only).
-    pub range_start: Option<Value>,
+    pub range_start: Option<FieldValue>,
     /// Exclusive upper bound of the key range (Range partitioning only).
-    pub range_end: Option<Value>,
+    pub range_end: Option<FieldValue>,
 }
 
 /// Partitioning metadata for a single table.

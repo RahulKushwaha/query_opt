@@ -2,15 +2,15 @@
 //
 // DataFusion ref: datafusion/common/src/stats.rs
 
-use crate::types::Value;
+use crate::types::FieldValue;
 
 /// Per-column statistics. Fields are Option so you can start with row counts
 /// and add histograms / min-max later without breaking changes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColumnStatistics {
     pub distinct_count: Option<usize>,
-    pub min_value: Option<Value>,
-    pub max_value: Option<Value>,
+    pub min_value: Option<FieldValue>,
+    pub max_value: Option<FieldValue>,
 }
 
 /// Table-level statistics used by the cost-based optimizer.

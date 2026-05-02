@@ -8,7 +8,7 @@
 //
 // DataFusion ref: datafusion/expr/src/expr.rs
 
-use crate::types::Value;
+use crate::types::FieldValue;
 use std::fmt;
 
 /// Comparison and arithmetic operators.
@@ -66,7 +66,7 @@ pub enum Expr {
     /// Reference to a column by name.
     Column(String),
     /// A constant value.
-    Literal(Value),
+    Literal(FieldValue),
     /// A binary operation: left op right.
     BinaryExpr {
         left: Box<Expr>,
@@ -83,7 +83,7 @@ pub fn col(name: impl Into<String>) -> Expr {
 }
 
 /// Helper to construct a literal value.
-pub fn lit(value: Value) -> Expr {
+pub fn lit(value: FieldValue) -> Expr {
     Expr::Literal(value)
 }
 
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn lit_creates_literal() {
-        assert_eq!(lit(Value::Int(5)), Expr::Literal(Value::Int(5)));
+        assert_eq!(lit(FieldValue::Int(5)), Expr::Literal(FieldValue::Int(5)));
     }
 
     // ── BinaryExpr construction ────────────────────────
@@ -187,13 +187,13 @@ mod tests {
         let e = Expr::BinaryExpr {
             left: Box::new(col("a")),
             op: Operator::Gt,
-            right: Box::new(lit(Value::Int(10))),
+            right: Box::new(lit(FieldValue::Int(10))),
         };
         match e {
             Expr::BinaryExpr { left, op, right } => {
                 assert_eq!(*left, col("a"));
                 assert_eq!(op, Operator::Gt);
-                assert_eq!(*right, lit(Value::Int(10)));
+                assert_eq!(*right, lit(FieldValue::Int(10)));
             }
             _ => panic!("expected BinaryExpr"),
         }
@@ -262,8 +262,8 @@ mod tests {
 
     #[test]
     fn display_literal() {
-        assert_eq!(lit(Value::Int(42)).to_string(), "42");
-        assert_eq!(lit(Value::Null).to_string(), "null");
+        assert_eq!(lit(FieldValue::Int(42)).to_string(), "42");
+        assert_eq!(lit(FieldValue::Null).to_string(), "null");
     }
 
     #[test]
@@ -271,7 +271,7 @@ mod tests {
         let e = Expr::BinaryExpr {
             left: Box::new(col("x")),
             op: Operator::Gt,
-            right: Box::new(lit(Value::Int(5))),
+            right: Box::new(lit(FieldValue::Int(5))),
         };
         let s = e.to_string();
         // Should contain the column, operator, and literal
@@ -302,6 +302,6 @@ mod tests {
     #[test]
     fn expr_ne() {
         assert_ne!(col("a"), col("b"));
-        assert_ne!(col("a"), lit(Value::Str("a".into())));
+        assert_ne!(col("a"), lit(FieldValue::Str("a".into())));
     }
 }

@@ -104,14 +104,14 @@ impl RowKey {
 mod tests {
     use super::*;
     use crate::RowCodec;
-    use expr::types::Value;
+    use expr::types::FieldValue;
 
     #[test]
     fn compare_single_int_pk() {
         let codec = RowCodec::new(1);
-        let (k1, _) = codec.encode(&[Value::Int(10), Value::Str("a".into())]);
-        let (k2, _) = codec.encode(&[Value::Int(20), Value::Str("b".into())]);
-        let (k3, _) = codec.encode(&[Value::Int(10), Value::Str("c".into())]);
+        let (k1, _) = codec.encode(&[FieldValue::Int(10), FieldValue::Str("a".into())]);
+        let (k2, _) = codec.encode(&[FieldValue::Int(20), FieldValue::Str("b".into())]);
+        let (k3, _) = codec.encode(&[FieldValue::Int(10), FieldValue::Str("c".into())]);
 
         assert_eq!(k1.compare(&k2, 1), Ordering::Less);
         assert_eq!(k2.compare(&k1, 1), Ordering::Greater);
@@ -121,9 +121,9 @@ mod tests {
     #[test]
     fn compare_negative_ints() {
         let codec = RowCodec::new(1);
-        let (k_neg, _) = codec.encode(&[Value::Int(-5)]);
-        let (k_pos, _) = codec.encode(&[Value::Int(5)]);
-        let (k_zero, _) = codec.encode(&[Value::Int(0)]);
+        let (k_neg, _) = codec.encode(&[FieldValue::Int(-5)]);
+        let (k_pos, _) = codec.encode(&[FieldValue::Int(5)]);
+        let (k_zero, _) = codec.encode(&[FieldValue::Int(0)]);
 
         assert_eq!(k_neg.compare(&k_pos, 1), Ordering::Less);
         assert_eq!(k_neg.compare(&k_zero, 1), Ordering::Less);
@@ -133,9 +133,9 @@ mod tests {
     #[test]
     fn compare_composite_pk() {
         let codec = RowCodec::new(2);
-        let (k1, _) = codec.encode(&[Value::Int(1), Value::Str("b".into()), Value::Int(0)]);
-        let (k2, _) = codec.encode(&[Value::Int(1), Value::Str("a".into()), Value::Int(0)]);
-        let (k3, _) = codec.encode(&[Value::Int(2), Value::Str("a".into()), Value::Int(0)]);
+        let (k1, _) = codec.encode(&[FieldValue::Int(1), FieldValue::Str("b".into()), FieldValue::Int(0)]);
+        let (k2, _) = codec.encode(&[FieldValue::Int(1), FieldValue::Str("a".into()), FieldValue::Int(0)]);
+        let (k3, _) = codec.encode(&[FieldValue::Int(2), FieldValue::Str("a".into()), FieldValue::Int(0)]);
 
         // Same first col, second col decides: "b" > "a"
         assert_eq!(k1.compare(&k2, 2), Ordering::Greater);
@@ -146,9 +146,9 @@ mod tests {
     #[test]
     fn compare_strings() {
         let codec = RowCodec::new(1);
-        let (k1, _) = codec.encode(&[Value::Str("apple".into())]);
-        let (k2, _) = codec.encode(&[Value::Str("banana".into())]);
-        let (k3, _) = codec.encode(&[Value::Str("apple".into())]);
+        let (k1, _) = codec.encode(&[FieldValue::Str("apple".into())]);
+        let (k2, _) = codec.encode(&[FieldValue::Str("banana".into())]);
+        let (k3, _) = codec.encode(&[FieldValue::Str("apple".into())]);
 
         assert_eq!(k1.compare(&k2, 1), Ordering::Less);
         assert_eq!(k1.compare(&k3, 1), Ordering::Equal);
@@ -157,8 +157,8 @@ mod tests {
     #[test]
     fn compare_null_ordering() {
         let codec = RowCodec::new(1);
-        let (k_null, _) = codec.encode(&[Value::Null]);
-        let (k_int, _) = codec.encode(&[Value::Int(1)]);
+        let (k_null, _) = codec.encode(&[FieldValue::Null]);
+        let (k_int, _) = codec.encode(&[FieldValue::Int(1)]);
 
         // Null (tag 0) sorts before Int (tag 2)
         assert_eq!(k_null.compare(&k_int, 1), Ordering::Less);

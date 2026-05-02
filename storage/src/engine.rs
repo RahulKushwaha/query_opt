@@ -6,7 +6,7 @@ use execution::engine::{ExecutionEngine, ExecutionError, ResultSet, Row};
 use execution::in_memory_engine::{execute_plan, DataSource};
 use expr::expr::{Expr, Operator};
 use expr::schema::Schema;
-use expr::types::Value;
+use expr::types::FieldValue;
 use physical_plan::plan::PhysicalPlan;
 use row::types::RowKey;
 

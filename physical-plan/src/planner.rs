@@ -53,14 +53,51 @@ impl PhysicalPlanner {
         // For each node, recursively convert child plans first, then wrap in
         // the corresponding physical node. Clone expressions as-is (physical
         // plan reuses the same Expr types for now).
-        todo!("implement logical-to-physical plan conversion")
+        let plan = match logical_plan {
+            LogicalPlan::Scan { table_name, schema } => PhysicalPlan::TableScan {
+                table_name: table_name.to_string(),
+                schema: schema.clone(),
+            },
+            LogicalPlan::Filter { input, predicate } => PhysicalPlan::Filter {
+                predicate: predicate.clone(),
+                input: Box::new(self.create_physical_plan(input)?),
+            },
+            LogicalPlan::Projection { exprs, input } => PhysicalPlan::Projection {
+                exprs: exprs.clone(),
+                input: Box::new(self.create_physical_plan(input)?),
+            },
+            LogicalPlan::Join {
+                left,
+                right,
+                on,
+                join_type,
+            } => PhysicalPlan::NestedLoopJoin {
+                left: Box::new(self.create_physical_plan(left)?),
+                right: Box::new(self.create_physical_plan(right)?),
+                on: on.clone(),
+                join_type: join_type.clone(),
+            },
+            LogicalPlan::Sort { exprs, input } => PhysicalPlan::Sort {
+                exprs: exprs.clone(),
+                input: Box::new(self.create_physical_plan(input)?),
+            },
+            LogicalPlan::Aggregate {
+                group_by,
+                aggr_exprs,
+                input,
+            } => PhysicalPlan::HashAggregate {
+                group_by: group_by.clone(),
+                aggr_exprs: aggr_exprs.clone(),
+                input: Box::new(self.create_physical_plan(input)?),
+            },
+        };
+
+        Ok(plan)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_plan_simple_scan() {
         // TODO: Create a LogicalPlan::Scan, convert it, verify result is PhysicalPlan::TableScan

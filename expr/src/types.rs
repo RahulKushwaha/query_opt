@@ -1,4 +1,4 @@
-// [File 05] Value and DataType enums
+// [File 05] FieldValue and DataType enums
 //
 // ┌─────────────────────────────────────────────────────┐
 // │ IMPLEMENTATION ORDER: 1 of 15                       │
@@ -10,15 +10,31 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 /// Runtime value — the actual data flowing through the query engine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Value {
+pub enum FieldValue {
     Int(i64),
     Float(f64),
     Str(String),
     Bool(bool),
     Null,
+}
+
+impl Eq for FieldValue {}
+
+impl Hash for FieldValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            FieldValue::Int(i) => i.hash(state),
+            FieldValue::Float(f) => f.to_bits().hash(state),
+            FieldValue::Str(s) => s.hash(state),
+            FieldValue::Bool(b) => b.hash(state),
+            FieldValue::Null => {}
+        }
+    }
 }
 
 /// Column data type — used in schema definitions.
@@ -30,29 +46,29 @@ pub enum DataType {
     Bool,
 }
 
-impl fmt::Display for Value {
+impl fmt::Display for FieldValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // TODO: Display each variant in a human-readable format
         // e.g., Int(42) -> "42", Null -> "NULL", Str("hello") -> "hello"
-        // todo!("implement Display for Value")
+        // todo!("implement Display for FieldValue")
         match self {
-            Value::Int(i) => {
+            FieldValue::Int(i) => {
                 write!(f, "{}", i)
             }
-            Value::Float(fmt) => {
+            FieldValue::Float(fmt) => {
                 write!(f, "{}", fmt)
             }
-            Value::Str(s) => {
+            FieldValue::Str(s) => {
                 write!(f, "{}", s)
             }
-            Value::Bool(b) => {
+            FieldValue::Bool(b) => {
                 if *b {
                     write!(f, "true")
                 } else {
                     write!(f, "false")
                 }
             }
-            Value::Null => {
+            FieldValue::Null => {
                 write!(f, "null")
             }
         }
@@ -84,36 +100,36 @@ impl fmt::Display for DataType {
 mod tests {
     use super::*;
 
-    // ── Value Display ──────────────────────────────────
+    // ── FieldValue Display ──────────────────────────────────
 
     #[test]
     fn display_value_int() {
-        assert_eq!(Value::Int(42).to_string(), "42");
-        assert_eq!(Value::Int(-1).to_string(), "-1");
-        assert_eq!(Value::Int(0).to_string(), "0");
+        assert_eq!(FieldValue::Int(42).to_string(), "42");
+        assert_eq!(FieldValue::Int(-1).to_string(), "-1");
+        assert_eq!(FieldValue::Int(0).to_string(), "0");
     }
 
     #[test]
     fn display_value_float() {
-        assert_eq!(Value::Float(3.14).to_string(), "3.14");
-        assert_eq!(Value::Float(-0.5).to_string(), "-0.5");
+        assert_eq!(FieldValue::Float(3.14).to_string(), "3.14");
+        assert_eq!(FieldValue::Float(-0.5).to_string(), "-0.5");
     }
 
     #[test]
     fn display_value_str() {
-        assert_eq!(Value::Str("hello".into()).to_string(), "hello");
-        assert_eq!(Value::Str("".into()).to_string(), "");
+        assert_eq!(FieldValue::Str("hello".into()).to_string(), "hello");
+        assert_eq!(FieldValue::Str("".into()).to_string(), "");
     }
 
     #[test]
     fn display_value_bool() {
-        assert_eq!(Value::Bool(true).to_string(), "true");
-        assert_eq!(Value::Bool(false).to_string(), "false");
+        assert_eq!(FieldValue::Bool(true).to_string(), "true");
+        assert_eq!(FieldValue::Bool(false).to_string(), "false");
     }
 
     #[test]
     fn display_value_null() {
-        assert_eq!(Value::Null.to_string(), "null");
+        assert_eq!(FieldValue::Null.to_string(), "null");
     }
 
     // ── DataType Display ───────────────────────────────
@@ -130,14 +146,14 @@ mod tests {
 
     #[test]
     fn value_clone_and_eq() {
-        let v = Value::Str("test".into());
+        let v = FieldValue::Str("test".into());
         assert_eq!(v.clone(), v);
     }
 
     #[test]
     fn value_ne() {
-        assert_ne!(Value::Int(1), Value::Int(2));
-        assert_ne!(Value::Int(1), Value::Null);
+        assert_ne!(FieldValue::Int(1), FieldValue::Int(2));
+        assert_ne!(FieldValue::Int(1), FieldValue::Null);
     }
 
     #[test]
@@ -151,7 +167,7 @@ mod tests {
     #[test]
     fn value_debug() {
         // Ensure Debug derive works and contains variant name
-        let dbg = format!("{:?}", Value::Int(7));
+        let dbg = format!("{:?}", FieldValue::Int(7));
         assert!(dbg.contains("Int"));
     }
 }

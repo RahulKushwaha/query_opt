@@ -94,7 +94,7 @@ mod tests {
     use super::*;
     use crate::expr::{col, lit};
     use crate::schema::Field;
-    use crate::types::{DataType, Value};
+    use crate::types::{DataType, FieldValue};
 
     #[test]
     fn test_build_scan_filter_project() {

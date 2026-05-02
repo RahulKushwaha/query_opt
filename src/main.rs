@@ -1,6 +1,6 @@
 use execution::engine::ExecutionEngine;
 use expr::schema::Schema;
-use expr::types::Value;
+use expr::types::FieldValue;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use sql_parser::{SqlPlanner, SqlStatement};
@@ -30,6 +30,8 @@ fn main() {
     }
 
     let mut rl = DefaultEditor::new().expect("failed to create editor");
+    let history_file = format!("{}/.query_opt_history", db_path);
+    let _ = rl.load_history(&history_file);
 
     loop {
         let readline = rl.readline("sql> ");
@@ -77,6 +79,7 @@ fn main() {
             }
         }
     }
+    let _ = rl.save_history(&history_file);
 }
 
 fn handle_sql(sql: &str, storage: &mut RocksStorage, catalog: &mut HashMap<String, Schema>) {
@@ -186,7 +189,7 @@ fn execute_logical_directly(
     engine: &RocksEngine<RocksStorage>,
     plan: &expr::logical_plan::plan::LogicalPlan,
     _storage: &RocksStorage,
-) -> Result<Vec<Vec<Value>>, execution::engine::ExecutionError> {
+) -> Result<Vec<Vec<FieldValue>>, execution::engine::ExecutionError> {
     let pp = logical_to_physical(plan);
     engine.execute(&pp)
 }
@@ -337,7 +340,7 @@ fn print_physical_plan(plan: &physical_plan::plan::PhysicalPlan, indent: usize) 
     }
 }
 
-fn print_results(plan: &expr::logical_plan::plan::LogicalPlan, rows: &[Vec<Value>]) {
+fn print_results(plan: &expr::logical_plan::plan::LogicalPlan, rows: &[Vec<FieldValue>]) {
     if rows.is_empty() {
         println!("(0 rows)");
         return;

@@ -2,7 +2,7 @@ use crate::fragment::*;
 use crate::partition::PartitionMap;
 use crate::planner::{DistributedPlanner, PlannerError};
 use execution::engine::{ExecutionError, ResultSet};
-use expr::types::Value;
+use expr::types::FieldValue;
 use physical_plan::plan::PhysicalPlan;
 use std::fmt;
 

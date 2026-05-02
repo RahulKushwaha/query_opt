@@ -109,13 +109,13 @@ fn expr_to_field(expr: &Expr, input_schema: &Schema) -> Field {
             }
         }
         Expr::Literal(v) => {
-            use crate::types::Value;
+            use crate::types::FieldValue;
             let dt = match v {
-                Value::Int(_) => DataType::Int,
-                Value::Float(_) => DataType::Float,
-                Value::Bool(_) => DataType::Bool,
-                Value::Str(_) => DataType::Str,
-                Value::Null => DataType::Str,
+                FieldValue::Int(_) => DataType::Int,
+                FieldValue::Float(_) => DataType::Float,
+                FieldValue::Bool(_) => DataType::Bool,
+                FieldValue::Str(_) => DataType::Str,
+                FieldValue::Null => DataType::Str,
             };
             Field::new(expr.to_string(), dt)
         }
