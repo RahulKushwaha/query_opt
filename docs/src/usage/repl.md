@@ -40,7 +40,10 @@ INSERT INTO orders VALUES (1, 'alice', 100), (2, 'bob', 250);
 SELECT customer, amount FROM orders WHERE amount > 150;
 SELECT customer, SUM(amount) FROM orders GROUP BY customer;
 SELECT o.customer, o.amount FROM orders o JOIN users u ON o.customer = u.name;
+SELECT customer FROM orders ORDER BY amount DESC LIMIT 10 OFFSET 20;
 ```
+
+`LIMIT` and `OFFSET` are streaming: the engine stops pulling from the input as soon as `fetch` rows have been emitted.
 
 ### EXPLAIN
 

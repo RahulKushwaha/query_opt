@@ -8,7 +8,7 @@ The foundational crate that every other crate depends on. It defines the shared 
 
 Runtime values and column data types.
 
-- **`Value`**: `Int(i64)`, `Float(f64)`, `Str(String)`, `Bool(bool)`, `Null`. Serializable with `serde`.
+- **`FieldValue`**: `Int(i64)`, `Float(f64)`, `Str(String)`, `Bool(bool)`, `Null`. Implements `Hash` and `Eq` (used as hash-table keys in aggregation), and serializes with `serde`.
 - **`DataType`**: `Int`, `Float`, `Str`, `Bool`. Used in schema definitions.
 
 ### `schema`
@@ -23,7 +23,7 @@ The expression tree used in filters, projections, join conditions, and aggregate
 ```rust
 enum Expr {
     Column(String),
-    Literal(Value),
+    Literal(FieldValue),
     BinaryExpr { left: Box<Expr>, op: Operator, right: Box<Expr> },
     AggregateFunction { fun: AggFunc, args: Vec<Expr> },
 }
@@ -35,7 +35,7 @@ Aggregate functions: `Count`, `Sum`, `Min`, `Max`, `Avg`.
 
 ### `logical_plan`
 
-- **`LogicalPlan`**: the relational algebra tree with variants `Scan`, `Filter`, `Projection`, `Join`, `Sort`, `Aggregate`.
+- **`LogicalPlan`**: the relational algebra tree with variants `Scan`, `Filter`, `Projection`, `Join`, `Sort`, `Aggregate`, `Limit { skip, fetch, input }`.
 - **`JoinType`**: `Inner`, `Left`, `Right`, `Full`.
 - **`LogicalPlanBuilder`**: chainable builder API for constructing plans in tests and the SQL planner.
 - **`display`**: pretty printing for plan trees.

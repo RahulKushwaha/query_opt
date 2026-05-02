@@ -37,18 +37,20 @@ The `PhysicalPlanner` converts each `LogicalPlan` node to its physical counterpa
 | `Projection` | `Projection` |
 | `Join` | `NestedLoopJoin` |
 | `Sort` | `Sort` |
-| `Aggregate` | `HashAggregate` |
+| `Aggregate` | `HashAggregate` (default; `ScalarAggregate` and `SortAggregate` are wired but not yet selected by the planner) |
+| `Limit` | `Limit` |
 
 If the physical planner is not yet implemented for a node, `main.rs` falls back to a direct 1:1 mapping.
 
 ## 4. Execution
 
-Any type implementing the `ExecutionEngine` trait can execute a `PhysicalPlan`. Two engines exist:
+Any type implementing the `ExecutionEngine` trait can execute a `PhysicalPlan`. The default engine is **`RocksEngine`** (in the `storage` crate) — reads from RocksDB and supports index-accelerated scans when a secondary index exists.
 
-- **`InMemoryEngine`**: operates on in memory tables (useful for testing).
-- **`RocksEngine`**: reads from RocksDB, supports index scans when a secondary index exists.
+Internally the engine uses a **pull-based, batched streaming pipeline**. Each operator implements `RowStream::next_batch`, yielding row batches lazily. `LimitStream` is the first native operator; the rest fall back to a materialized executor (`execution/src/materialized.rs`) that fully evaluates each subtree, with the result wrapped in `MaterializedStream` so the trait surface is uniform. As more operators get streaming impls, they move out of the fallback.
 
-The engine walks the `PhysicalPlan` tree recursively, evaluating expressions with the `evaluate_expr` function.
+Aggregation goes through a separate `Aggregator` trait (with `accumulate`/`finalize`) wrapped by an `AggregateStream` adapter, so each strategy (Hash, Sort, Scalar) is its own struct that plugs into the same pipeline.
+
+Expression evaluation against a single row is handled by `evaluator::eval`.
 
 ## 5. Result Display
 

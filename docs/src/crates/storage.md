@@ -28,10 +28,11 @@ Index keys are encoded for correct byte ordering: a type prefix byte, the value 
 
 ## `RocksEngine`
 
-Implements `ExecutionEngine` for `RocksStorage`. Walks the `PhysicalPlan` tree:
+Implements `ExecutionEngine` for any storage that satisfies `Catalog + StorageRead`. Internally it:
 
-- **TableScan**: delegates to `scan_table`.
-- **Filter**: attempts an index scan first (if a secondary index exists on the filtered column); falls back to a full scan with predicate evaluation.
-- **Projection**: evaluates each expression per row.
-- **NestedLoopJoin**: nested loop with predicate evaluation.
-- **Sort / HashAggregate**: in memory sort and hash based grouping.
+1. Tries an index-acceleration shortcut: if the plan is `Filter(predicate, TableScan)` and the predicate constrains an indexed column, it routes through `index_scan` + materializer instead of a full table scan.
+2. Otherwise builds a `RowStream` tree via `execution::stream::build_stream` and drains it. The streaming path is shared with any other `ExecutionEngine` implementation — `RocksEngine` only contributes the `DataSource` adapter (`StorageDataSource`) that resolves `TableScan` against RocksDB.
+
+Per-operator behavior (Filter, Projection, NestedLoopJoin, Sort, HashAggregate) lives in the `execution` crate, not here. New streaming operators (`Limit`, `ScalarAggregate`, `SortAggregate`) automatically work for `RocksEngine` because they're wired into `build_stream`.
+
+The crate uses `rocksdb` 0.23 (newer `librocksdb-sys` sources required for GCC 13+ / Clang 16+).

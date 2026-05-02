@@ -19,7 +19,7 @@
         ▲
         │
 ┌──────────────┐
-│     expr     │   Shared types: Value, DataType, Schema,
+│     expr     │   Shared types: FieldValue, DataType, Schema,
 │              │   Expr, LogicalPlan, Statistics
 └──────────────┘
 ```
@@ -34,7 +34,7 @@ The `expr` crate sits at the bottom of the dependency graph. Every other crate d
 | `sql-parser` | `sql-parser/` | SQL parsing via `sqlparser` crate, conversion to `LogicalPlan` |
 | `optimizer` | `optimizer/` | 30+ rewrite rules and a cost model |
 | `physical-plan` | `physical-plan/` | `PhysicalPlan` enum and logical to physical conversion |
-| `execution` | `execution/` | `ExecutionEngine` trait, expression evaluator, in memory engine |
+| `execution` | `execution/` | `ExecutionEngine` / `DataSource` / `RowStream` / `Aggregator` traits, batched pull-based streams, expression evaluator |
 | `storage` | `storage/` | RocksDB storage layer with secondary indexes |
 | `distributed` | `distributed/` | Partition map, plan fragments, exchanges, coordinator |
 

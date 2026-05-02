@@ -19,7 +19,9 @@ Uses the [`sqlparser`](https://crates.io/crates/sqlparser) crate with `GenericDi
 
 1. `Parser::parse_sql` produces an AST.
 2. `plan_statement` dispatches on the AST node type.
-3. For `SELECT` queries, `plan_query` walks the AST to build a `LogicalPlan` using `LogicalPlanBuilder`: resolving table references against the catalog, mapping SQL expressions to `Expr`, and layering `Filter`, `Projection`, `Join`, `Sort`, and `Aggregate` nodes.
+3. For `SELECT` queries, `plan_query` walks the AST to build a `LogicalPlan` using `LogicalPlanBuilder`: resolving table references against the catalog, mapping SQL expressions to `Expr`, and layering `Filter`, `Projection`, `Join`, `Sort`, `Aggregate`, and `Limit` nodes.
+
+`LIMIT` and `OFFSET` clauses parse to a `LogicalPlan::Limit { skip, fetch, input }` wrapping the rest of the query. `OFFSET` without `LIMIT` uses `usize::MAX` as the fetch sentinel; `LIMIT` without `OFFSET` uses `skip = 0`.
 
 ## Error Types
 
