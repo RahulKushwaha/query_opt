@@ -3,6 +3,7 @@
 // This is the extension point for plugging in a custom execution engine.
 // The in-memory engine implements this trait; your future custom engine will too.
 
+use expr::schema::Schema;
 use expr::types::FieldValue;
 use physical_plan::plan::PhysicalPlan;
 use std::fmt;
@@ -38,4 +39,11 @@ impl fmt::Display for ExecutionError {
 /// this trait can execute it.
 pub trait ExecutionEngine {
     fn execute(&self, plan: &PhysicalPlan) -> Result<ResultSet, ExecutionError>;
+}
+
+/// Boundary between the execution engine and the storage layer.
+/// Implement this to plug in any storage backend (RocksDB, in-memory, etc.)
+/// — the executor calls `scan` to read rows for a `TableScan` operator.
+pub trait DataSource {
+    fn scan(&self, table_name: &str, schema: &Schema) -> Result<ResultSet, ExecutionError>;
 }

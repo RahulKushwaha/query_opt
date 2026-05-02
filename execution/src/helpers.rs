@@ -30,6 +30,25 @@ pub fn plan_schema(plan: &PhysicalPlan) -> Schema {
             Schema::new(fields)
         }
         PhysicalPlan::Sort { input, .. } => plan_schema(input),
+        PhysicalPlan::Limit { input, .. } => plan_schema(input),
+        // Sort and scalar aggregates produce the same column shape as hash
+        // aggregate, so reuse the existing arm's logic by recursing through.
+        PhysicalPlan::SortAggregate {
+            group_by,
+            aggr_exprs,
+            input,
+        } => plan_schema(&PhysicalPlan::HashAggregate {
+            group_by: group_by.clone(),
+            aggr_exprs: aggr_exprs.clone(),
+            input: input.clone(),
+        }),
+        PhysicalPlan::ScalarAggregate { aggr_exprs, input } => {
+            plan_schema(&PhysicalPlan::HashAggregate {
+                group_by: Vec::new(),
+                aggr_exprs: aggr_exprs.clone(),
+                input: input.clone(),
+            })
+        }
         PhysicalPlan::HashAggregate {
             group_by,
             aggr_exprs,

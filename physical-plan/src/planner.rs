@@ -90,6 +90,11 @@ impl PhysicalPlanner {
                 aggr_exprs: aggr_exprs.clone(),
                 input: Box::new(self.create_physical_plan(input)?),
             },
+            LogicalPlan::Limit { skip, fetch, input } => PhysicalPlan::Limit {
+                skip: *skip,
+                fetch: *fetch,
+                input: Box::new(self.create_physical_plan(input)?),
+            },
         };
 
         Ok(plan)

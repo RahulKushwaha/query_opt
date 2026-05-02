@@ -2,8 +2,8 @@ use crate::catalog::Catalog;
 use crate::materializer::Materializer;
 use crate::read::StorageRead;
 use crate::RocksStorage;
-use execution::engine::{ExecutionEngine, ExecutionError, ResultSet, Row};
-use execution::in_memory_engine::{execute_plan, DataSource};
+use execution::engine::{DataSource, ExecutionEngine, ExecutionError, ResultSet, Row};
+use execution::stream::build_stream;
 use expr::expr::{Expr, Operator};
 use expr::schema::Schema;
 use expr::types::FieldValue;
@@ -49,7 +49,12 @@ impl<'a, S: Catalog + StorageRead> ExecutionEngine for RocksEngine<'a, S> {
         }
 
         let source = StorageDataSource { storage: self.storage };
-        execute_plan(&source, plan)
+        let mut stream = build_stream(plan, &source)?;
+        let mut out = Vec::new();
+        while let Some(batch) = stream.next_batch()? {
+            out.extend(batch);
+        }
+        Ok(out)
     }
 }
 

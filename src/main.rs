@@ -218,6 +218,11 @@ fn logical_to_physical(
             aggr_exprs: aggr_exprs.clone(),
             input: Box::new(logical_to_physical(input)),
         },
+        LogicalPlan::Limit { skip, fetch, input } => PhysicalPlan::Limit {
+            skip: *skip,
+            fetch: *fetch,
+            input: Box::new(logical_to_physical(input)),
+        },
     }
 }
 
@@ -264,6 +269,10 @@ fn print_logical_plan(plan: &expr::logical_plan::plan::LogicalPlan, indent: usiz
                 groups.join(", "),
                 aggs.join(", ")
             );
+            print_logical_plan(input, indent + 1);
+        }
+        LogicalPlan::Limit { skip, fetch, input } => {
+            println!("{}Limit: skip={}, fetch={}", pad, skip, fetch);
             print_logical_plan(input, indent + 1);
         }
     }
@@ -313,6 +322,30 @@ fn print_physical_plan(plan: &physical_plan::plan::PhysicalPlan, indent: usize) 
                 groups.join(", "),
                 aggs.join(", ")
             );
+            print_physical_plan(input, indent + 1);
+        }
+        PhysicalPlan::SortAggregate {
+            group_by,
+            aggr_exprs,
+            input,
+        } => {
+            let groups: Vec<String> = group_by.iter().map(|e| format!("{}", e)).collect();
+            let aggs: Vec<String> = aggr_exprs.iter().map(|e| format!("{}", e)).collect();
+            println!(
+                "{}SortAggregate: group_by=[{}], aggs=[{}]",
+                pad,
+                groups.join(", "),
+                aggs.join(", ")
+            );
+            print_physical_plan(input, indent + 1);
+        }
+        PhysicalPlan::ScalarAggregate { aggr_exprs, input } => {
+            let aggs: Vec<String> = aggr_exprs.iter().map(|e| format!("{}", e)).collect();
+            println!("{}ScalarAggregate: aggs=[{}]", pad, aggs.join(", "));
+            print_physical_plan(input, indent + 1);
+        }
+        PhysicalPlan::Limit { skip, fetch, input } => {
+            println!("{}Limit: skip={}, fetch={}", pad, skip, fetch);
             print_physical_plan(input, indent + 1);
         }
     }

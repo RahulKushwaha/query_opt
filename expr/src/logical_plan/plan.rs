@@ -56,6 +56,11 @@ pub enum LogicalPlan {
         aggr_exprs: Vec<Expr>,
         input: Box<LogicalPlan>,
     },
+    Limit {
+        skip: usize,
+        fetch: usize,
+        input: Box<LogicalPlan>,
+    },
 }
 
 impl LogicalPlan {
@@ -64,9 +69,12 @@ impl LogicalPlan {
         match self {
             LogicalPlan::Scan { schema, .. } => schema.clone(),
             LogicalPlan::Filter { input, .. } => input.schema(),
-            LogicalPlan::Projection { exprs, input } => {
-                Schema::new(exprs.iter().map(|e| expr_to_field(e, &input.schema())).collect())
-            }
+            LogicalPlan::Projection { exprs, input } => Schema::new(
+                exprs
+                    .iter()
+                    .map(|e| expr_to_field(e, &input.schema()))
+                    .collect(),
+            ),
             LogicalPlan::Join {
                 left,
                 right,
@@ -95,6 +103,10 @@ impl LogicalPlan {
                     .collect();
                 Schema::new(fields)
             }
+            LogicalPlan::Limit { skip, fetch, input } => {
+                let input_schema = input.schema();
+                Schema::new(input_schema.fields)
+            }
         }
     }
 }
@@ -102,12 +114,10 @@ impl LogicalPlan {
 /// Derive a Field from an expression, resolving column types from the input schema.
 fn expr_to_field(expr: &Expr, input_schema: &Schema) -> Field {
     match expr {
-        Expr::Column(name) => {
-            match input_schema.field_by_name(name) {
-                Some((_, f)) => f.clone(),
-                None => Field::new(name.clone(), DataType::Str),
-            }
-        }
+        Expr::Column(name) => match input_schema.field_by_name(name) {
+            Some((_, f)) => f.clone(),
+            None => Field::new(name.clone(), DataType::Str),
+        },
         Expr::Literal(v) => {
             use crate::types::FieldValue;
             let dt = match v {
@@ -131,8 +141,9 @@ fn expr_to_field(expr: &Expr, input_schema: &Schema) -> Field {
             };
             Field::new(expr.to_string(), dt)
         }
-        Expr::BinaryExpr { left, .. } => {
-            Field::new(expr.to_string(), expr_to_field(left, input_schema).data_type)
-        }
+        Expr::BinaryExpr { left, .. } => Field::new(
+            expr.to_string(),
+            expr_to_field(left, input_schema).data_type,
+        ),
     }
 }

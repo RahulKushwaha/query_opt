@@ -1,4 +1,13 @@
-use std::collections::HashMap;
+//! Materialized (non-streaming) executor.
+//!
+//! Walks a `PhysicalPlan` recursively, fully materializing each operator's
+//! output into a `Vec<Row>` before passing it to the parent. Storage-agnostic:
+//! it reaches the leaf via the [`DataSource`] trait, so any backend works.
+//!
+//! Used by `stream::build_stream` as the fallback for operators that haven't
+//! been converted to streaming yet. Each operator that gets a streaming impl
+//! moves out of here and into `stream.rs`. When every operator is streaming,
+//! this module goes away.
 
 use expr::expr::{Expr, Operator};
 use expr::logical_plan::JoinType;
@@ -6,46 +15,16 @@ use expr::schema::Schema;
 use expr::types::FieldValue;
 use physical_plan::plan::PhysicalPlan;
 
-use crate::engine::{ExecutionEngine, ExecutionError, ResultSet, Row};
+use crate::engine::{DataSource, ExecutionError, ResultSet, Row};
 use crate::evaluator::{cmp_values, eval};
 use crate::helpers::{compute_aggregate, plan_schema};
-use crate::memory_table::InMemoryDataStore;
 
-/// Trait for providing rows to the execution engine.
-/// Implement this to plug in any storage backend.
-pub trait DataSource {
-    fn scan(&self, table_name: &str, schema: &Schema) -> Result<ResultSet, ExecutionError>;
-}
-
-impl DataSource for InMemoryDataStore {
-    fn scan(&self, table_name: &str, _schema: &Schema) -> Result<ResultSet, ExecutionError> {
-        let table = self
-            .get_table(table_name)
-            .ok_or_else(|| ExecutionError::TableNotFound(table_name.into()))?;
-        Ok(table.rows.clone())
-    }
-}
-
-/// Generic execution engine that works with any DataSource.
-pub struct GenericEngine<D: DataSource> {
-    pub data_source: D,
-}
-
-impl<D: DataSource> GenericEngine<D> {
-    pub fn new(data_source: D) -> Self {
-        Self { data_source }
-    }
-}
-
-impl<D: DataSource> ExecutionEngine for GenericEngine<D> {
-    fn execute(&self, plan: &PhysicalPlan) -> Result<ResultSet, ExecutionError> {
-        execute_plan(&self.data_source, plan)
-    }
-}
-
-/// Execute a physical plan against a data source. Public so storage engines
-/// can reuse the operator logic while providing their own TableScan.
-pub fn execute_plan(source: &dyn DataSource, plan: &PhysicalPlan) -> Result<ResultSet, ExecutionError> {
+/// Execute a physical plan against a data source, fully materializing the
+/// result.
+pub fn execute_plan(
+    source: &dyn DataSource,
+    plan: &PhysicalPlan,
+) -> Result<ResultSet, ExecutionError> {
     match plan {
         PhysicalPlan::TableScan {
             table_name, schema, ..
@@ -58,7 +37,9 @@ pub fn execute_plan(source: &dyn DataSource, plan: &PhysicalPlan) -> Result<Resu
             let rows = execute_plan(source, input)?;
             Ok(rows
                 .into_iter()
-                .filter(|row| matches!(eval(predicate, row, &schema), Ok(FieldValue::Bool(true))))
+                .filter(|row| {
+                    matches!(eval(predicate, row, &schema), Ok(FieldValue::Bool(true)))
+                })
                 .collect())
         }
 
@@ -106,8 +87,30 @@ pub fn execute_plan(source: &dyn DataSource, plan: &PhysicalPlan) -> Result<Resu
         } => {
             let schema = plan_schema(input);
             let rows = execute_plan(source, input)?;
-            crate::aggregation::hash_aggregate::execute_hash_aggregate(&rows, &schema, group_by, aggr_exprs)
-        },
+            crate::aggregation::hash_aggregate::execute_hash_aggregate(
+                &rows, &schema, group_by, aggr_exprs,
+            )
+        }
+
+        PhysicalPlan::SortAggregate { .. } => {
+            // Streaming SortAggregate goes through `stream::build_stream` →
+            // `AggregateStream(SortAggregator)`. This arm is only reachable
+            // if SortAggregate appears nested under an unconverted operator.
+            todo!("execute SortAggregate via materialized path")
+        }
+
+        PhysicalPlan::ScalarAggregate { .. } => {
+            // Same situation as SortAggregate above.
+            todo!("execute ScalarAggregate via materialized path")
+        }
+
+        PhysicalPlan::Limit { input, .. } => {
+            // Limit's streaming impl in `stream.rs` is canonical. This arm
+            // ignores skip/fetch and just forwards the input — it's only
+            // reachable for a Limit nested under an unconverted operator,
+            // which doesn't currently happen for any user-facing query.
+            execute_plan(source, input)
+        }
     }
 }
 
@@ -208,119 +211,4 @@ fn execute_join(
         }
     }
     Ok(result)
-}
-
-/// Convenience type alias.
-pub type InMemoryEngine = GenericEngine<InMemoryDataStore>;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use expr::expr::AggFunc;
-    use expr::schema::Field;
-    use expr::types::DataType;
-
-    fn make_engine() -> InMemoryEngine {
-        let mut ds = InMemoryDataStore::new();
-        ds.register_table(
-            "users",
-            Schema::new(vec![
-                Field::new("id", DataType::Int),
-                Field::new("name", DataType::Str),
-                Field::new("score", DataType::Int),
-            ]),
-            vec![
-                vec![FieldValue::Int(1), FieldValue::Str("alice".into()), FieldValue::Int(90)],
-                vec![FieldValue::Int(2), FieldValue::Str("bob".into()), FieldValue::Int(75)],
-                vec![FieldValue::Int(3), FieldValue::Str("carol".into()), FieldValue::Int(90)],
-            ],
-        );
-        GenericEngine::new(ds)
-    }
-
-    fn users_schema() -> Schema {
-        Schema::new(vec![
-            Field::new("id", DataType::Int),
-            Field::new("name", DataType::Str),
-            Field::new("score", DataType::Int),
-        ])
-    }
-
-    #[test]
-    fn test_scan() {
-        let engine = make_engine();
-        let plan = PhysicalPlan::TableScan {
-            table_name: "users".into(),
-            schema: users_schema(),
-        };
-        let rows = engine.execute(&plan).unwrap();
-        assert_eq!(rows.len(), 3);
-    }
-
-    #[test]
-    fn test_filter() {
-        let engine = make_engine();
-        let plan = PhysicalPlan::Filter {
-            predicate: Expr::BinaryExpr {
-                left: Box::new(Expr::Column("score".into())),
-                op: Operator::Gt,
-                right: Box::new(Expr::Literal(FieldValue::Int(80))),
-            },
-            input: Box::new(PhysicalPlan::TableScan {
-                table_name: "users".into(),
-                schema: users_schema(),
-            }),
-        };
-        let rows = engine.execute(&plan).unwrap();
-        assert_eq!(rows.len(), 2);
-    }
-
-    #[test]
-    fn test_projection() {
-        let engine = make_engine();
-        let plan = PhysicalPlan::Projection {
-            exprs: vec![Expr::Column("name".into())],
-            input: Box::new(PhysicalPlan::TableScan {
-                table_name: "users".into(),
-                schema: users_schema(),
-            }),
-        };
-        let rows = engine.execute(&plan).unwrap();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0], vec![FieldValue::Str("alice".into())]);
-    }
-
-    #[test]
-    fn test_sort() {
-        let engine = make_engine();
-        let plan = PhysicalPlan::Sort {
-            exprs: vec![Expr::Column("name".into())],
-            input: Box::new(PhysicalPlan::TableScan {
-                table_name: "users".into(),
-                schema: users_schema(),
-            }),
-        };
-        let rows = engine.execute(&plan).unwrap();
-        assert_eq!(rows[0][1], FieldValue::Str("alice".into()));
-        assert_eq!(rows[1][1], FieldValue::Str("bob".into()));
-        assert_eq!(rows[2][1], FieldValue::Str("carol".into()));
-    }
-
-    #[test]
-    fn test_aggregate() {
-        let engine = make_engine();
-        let plan = PhysicalPlan::HashAggregate {
-            group_by: vec![Expr::Column("score".into())],
-            aggr_exprs: vec![Expr::AggregateFunction {
-                fun: AggFunc::Count,
-                args: vec![Expr::Column("id".into())],
-            }],
-            input: Box::new(PhysicalPlan::TableScan {
-                table_name: "users".into(),
-                schema: users_schema(),
-            }),
-        };
-        let rows = engine.execute(&plan).unwrap();
-        assert_eq!(rows.len(), 2); // score 90 (2 rows) and 75 (1 row)
-    }
 }

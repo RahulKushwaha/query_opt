@@ -30,9 +30,18 @@ impl fmt::Display for PlanError {
 
 /// Result of planning a SQL statement.
 pub enum SqlStatement {
-    CreateTable { name: String, schema: Schema },
-    CreateIndex { table: String, column: String },
-    Insert { table: String, rows: Vec<Vec<FieldValue>> },
+    CreateTable {
+        name: String,
+        schema: Schema,
+    },
+    CreateIndex {
+        table: String,
+        column: String,
+    },
+    Insert {
+        table: String,
+        rows: Vec<Vec<FieldValue>>,
+    },
     Query(LogicalPlan),
 }
 
@@ -48,8 +57,8 @@ impl SqlPlanner {
 
     pub fn plan_sql(&self, sql: &str) -> Result<SqlStatement, PlanError> {
         let dialect = GenericDialect {};
-        let statements = Parser::parse_sql(&dialect, sql)
-            .map_err(|e| PlanError::Parse(e.to_string()))?;
+        let statements =
+            Parser::parse_sql(&dialect, sql).map_err(|e| PlanError::Parse(e.to_string()))?;
 
         if statements.is_empty() {
             return Err(PlanError::Parse("empty SQL".into()));
@@ -83,7 +92,13 @@ impl SqlPlanner {
             .map(|(pos, col)| {
                 let dt = sql_type_to_datatype(&col.data_type);
                 let is_pk = col.options.iter().any(|opt| {
-                    matches!(opt.option, ast::ColumnOption::Unique { is_primary: true, .. })
+                    matches!(
+                        opt.option,
+                        ast::ColumnOption::Unique {
+                            is_primary: true,
+                            ..
+                        }
+                    )
                 });
                 if is_pk {
                     pk_cols.push(col.name.value.clone());
@@ -157,7 +172,11 @@ impl SqlPlanner {
                 }
                 result
             }
-            _ => return Err(PlanError::Unsupported("only VALUES inserts supported".into())),
+            _ => {
+                return Err(PlanError::Unsupported(
+                    "only VALUES inserts supported".into(),
+                ))
+            }
         };
 
         Ok(SqlStatement::Insert { table, rows })
@@ -166,7 +185,11 @@ impl SqlPlanner {
     fn plan_query(&self, query: &ast::Query) -> Result<LogicalPlan, PlanError> {
         let select = match query.body.as_ref() {
             ast::SetExpr::Select(s) => s,
-            _ => return Err(PlanError::Unsupported("only SELECT queries supported".into())),
+            _ => {
+                return Err(PlanError::Unsupported(
+                    "only SELECT queries supported".into(),
+                ))
+            }
         };
 
         // FROM clause — build base scan(s) with joins.
@@ -244,6 +267,25 @@ impl SqlPlanner {
             }
         }
 
+        // LIMIT / OFFSET. fetch=usize::MAX means "no upper bound" (OFFSET-only
+        // queries). skip=0 means no OFFSET. We only wrap the plan when at
+        // least one of the two is actually set.
+        let skip = match &query.offset {
+            Some(off) => expr_to_usize(&off.value)?,
+            None => 0,
+        };
+        let fetch = match &query.limit {
+            Some(e) => expr_to_usize(e)?,
+            None => usize::MAX,
+        };
+        if skip > 0 || fetch != usize::MAX {
+            plan = LogicalPlan::Limit {
+                skip,
+                fetch,
+                input: Box::new(plan),
+            };
+        }
+
         Ok(plan)
     }
 
@@ -270,10 +312,9 @@ impl SqlPlanner {
                 ast::JoinOperator::FullOuter(constraint) => {
                     (JoinType::Full, self.extract_join_constraint(constraint)?)
                 }
-                ast::JoinOperator::CrossJoin => (
-                    JoinType::Inner,
-                    Expr::Literal(FieldValue::Bool(true)),
-                ),
+                ast::JoinOperator::CrossJoin => {
+                    (JoinType::Inner, Expr::Literal(FieldValue::Bool(true)))
+                }
                 _ => {
                     return Err(PlanError::Unsupported("unsupported join type".into()));
                 }
@@ -313,31 +354,27 @@ impl SqlPlanner {
                     schema: schema.clone(),
                 })
             }
-            _ => Err(PlanError::Unsupported("only table references supported in FROM".into())),
+            _ => Err(PlanError::Unsupported(
+                "only table references supported in FROM".into(),
+            )),
         }
     }
 
-    fn extract_join_constraint(
-        &self,
-        constraint: &ast::JoinConstraint,
-    ) -> Result<Expr, PlanError> {
+    fn extract_join_constraint(&self, constraint: &ast::JoinConstraint) -> Result<Expr, PlanError> {
         match constraint {
             ast::JoinConstraint::On(e) => self.convert_expr(e),
-            _ => Err(PlanError::Unsupported("only ON join constraints supported".into())),
+            _ => Err(PlanError::Unsupported(
+                "only ON join constraints supported".into(),
+            )),
         }
     }
 
-    fn plan_projection(
-        &self,
-        items: &[ast::SelectItem],
-    ) -> Result<Vec<Expr>, PlanError> {
+    fn plan_projection(&self, items: &[ast::SelectItem]) -> Result<Vec<Expr>, PlanError> {
         let mut exprs = Vec::new();
         for item in items {
             match item {
                 ast::SelectItem::UnnamedExpr(e) => exprs.push(self.convert_expr(e)?),
-                ast::SelectItem::ExprWithAlias { expr, .. } => {
-                    exprs.push(self.convert_expr(expr)?)
-                }
+                ast::SelectItem::ExprWithAlias { expr, .. } => exprs.push(self.convert_expr(expr)?),
                 ast::SelectItem::Wildcard(_) => {
                     // Wildcard means no explicit projection needed.
                     return Ok(Vec::new());
@@ -385,12 +422,7 @@ impl SqlPlanner {
                     "MIN" => AggFunc::Min,
                     "MAX" => AggFunc::Max,
                     "AVG" => AggFunc::Avg,
-                    _ => {
-                        return Err(PlanError::Unsupported(format!(
-                            "function: {}",
-                            name
-                        )))
-                    }
+                    _ => return Err(PlanError::Unsupported(format!("function: {}", name))),
                 };
                 let args = match &func.args {
                     ast::FunctionArguments::List(arg_list) => arg_list
@@ -424,7 +456,10 @@ impl SqlPlanner {
                 })
             }
 
-            _ => Err(PlanError::Unsupported(format!("expression: {:?}", sql_expr))),
+            _ => Err(PlanError::Unsupported(format!(
+                "expression: {:?}",
+                sql_expr
+            ))),
         }
     }
 }
@@ -488,6 +523,20 @@ fn sql_value_expr_to_value(
         },
         _ => Err(PlanError::Unsupported(format!(
             "INSERT value expression: {:?}",
+            expr
+        ))),
+    }
+}
+
+fn expr_to_usize(expr: &ast::Expr) -> Result<usize, PlanError> {
+    match expr {
+        ast::Expr::Value(ast::Value::Number(n, _)) => n.parse::<usize>().map_err(|_| {
+            PlanError::Parse(format!(
+                "LIMIT/OFFSET must be a non-negative integer, got: {n}"
+            ))
+        }),
+        _ => Err(PlanError::Unsupported(format!(
+            "LIMIT/OFFSET expression: {:?}",
             expr
         ))),
     }
@@ -607,9 +656,8 @@ mod tests {
     #[test]
     fn parse_create_table_constraint_pk() {
         let planner = SqlPlanner::new(HashMap::new());
-        let result = planner.plan_sql(
-            "CREATE TABLE t (a INT, b INT, c VARCHAR, PRIMARY KEY (a, b))"
-        );
+        let result =
+            planner.plan_sql("CREATE TABLE t (a INT, b INT, c VARCHAR, PRIMARY KEY (a, b))");
         match result.unwrap() {
             SqlStatement::CreateTable { schema, .. } => {
                 assert!(schema.fields[0].is_pk);
@@ -631,7 +679,10 @@ mod tests {
             SqlStatement::Insert { table, rows } => {
                 assert_eq!(table, "t1");
                 assert_eq!(rows.len(), 2);
-                assert_eq!(rows[0], vec![FieldValue::Int(1), FieldValue::Int(2), FieldValue::Int(3)]);
+                assert_eq!(
+                    rows[0],
+                    vec![FieldValue::Int(1), FieldValue::Int(2), FieldValue::Int(3)]
+                );
             }
             _ => panic!("expected Insert"),
         }
@@ -640,8 +691,7 @@ mod tests {
     #[test]
     fn parse_join() {
         let planner = SqlPlanner::new(test_catalog());
-        let result =
-            planner.plan_sql("SELECT t1.x, t2.w FROM t1 JOIN t2 ON t1.y = t2.y");
+        let result = planner.plan_sql("SELECT t1.x, t2.w FROM t1 JOIN t2 ON t1.y = t2.y");
         assert!(result.is_ok());
         match result.unwrap() {
             SqlStatement::Query(LogicalPlan::Projection { input, .. }) => {
@@ -666,6 +716,66 @@ mod tests {
                 assert_eq!(aggr_exprs.len(), 1);
             }
             _ => panic!("expected Aggregate"),
+        }
+    }
+
+    #[test]
+    fn parse_limit_only() {
+        let planner = SqlPlanner::new(test_catalog());
+        let result = planner.plan_sql("SELECT x FROM t1 LIMIT 10").unwrap();
+        match result {
+            SqlStatement::Query(LogicalPlan::Limit { skip, fetch, .. }) => {
+                assert_eq!(skip, 0);
+                assert_eq!(fetch, 10);
+            }
+            _ => panic!("expected Limit"),
+        }
+    }
+
+    #[test]
+    fn parse_offset_only() {
+        let planner = SqlPlanner::new(test_catalog());
+        let result = planner.plan_sql("SELECT x FROM t1 OFFSET 20").unwrap();
+        match result {
+            SqlStatement::Query(LogicalPlan::Limit { skip, fetch, .. }) => {
+                assert_eq!(skip, 20);
+                assert_eq!(fetch, usize::MAX);
+            }
+            _ => panic!("expected Limit"),
+        }
+    }
+
+    #[test]
+    fn parse_limit_and_offset() {
+        let planner = SqlPlanner::new(test_catalog());
+        let result = planner
+            .plan_sql("SELECT x FROM t1 ORDER BY x LIMIT 10 OFFSET 20")
+            .unwrap();
+        match result {
+            SqlStatement::Query(LogicalPlan::Limit {
+                skip, fetch, input,
+            }) => {
+                assert_eq!(skip, 20);
+                assert_eq!(fetch, 10);
+                // Limit sits above Sort, which sits above the rest.
+                assert!(matches!(*input, LogicalPlan::Sort { .. }));
+            }
+            _ => panic!("expected Limit over Sort"),
+        }
+    }
+
+    #[test]
+    fn parse_no_limit_no_offset() {
+        let planner = SqlPlanner::new(test_catalog());
+        let result = planner.plan_sql("SELECT x FROM t1").unwrap();
+        match result {
+            SqlStatement::Query(plan) => {
+                assert!(
+                    !matches!(plan, LogicalPlan::Limit { .. }),
+                    "should not wrap in Limit when neither clause is present"
+                );
+            }
+            _ => panic!("expected Query"),
         }
     }
 }

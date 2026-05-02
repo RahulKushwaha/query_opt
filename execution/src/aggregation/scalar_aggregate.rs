@@ -2,9 +2,11 @@ use expr::expr::Expr;
 use expr::schema::Schema;
 use expr::types::FieldValue;
 
+use crate::aggregation::Aggregator;
 use crate::engine::{ExecutionError, ResultSet, Row};
 use crate::evaluator::eval;
 use crate::helpers::compute_aggregate;
+use crate::stream::Batch;
 
 /// Scalar aggregation: no GROUP BY, the entire input is one group.
 /// Returns exactly one row. O(n) time, O(1) memory (no hash table).
@@ -34,6 +36,50 @@ pub fn execute_scalar_aggregate(
     }
 
     Ok(vec![out_row])
+}
+
+/// Scalar aggregation as an `Aggregator`. No GROUP BY: the entire input is a
+/// single group; emits exactly one row.
+///
+/// **Pipeline type:** blocking (one row out, only after input drains).
+/// **Memory:** O(1) — per-aggregate accumulator state, no hash table.
+pub struct ScalarAggregator {
+    pub input_schema: Schema,
+    pub aggr_exprs: Vec<Expr>,
+    // TODO: add per-aggregate accumulator state. Two reasonable options:
+    //   (a) Buffer all rows and compute aggregates in finalize (matches the
+    //       existing free function above; simple but O(n) memory).
+    //   (b) Maintain incremental accumulators (e.g. running sum + count) so
+    //       memory stays O(1). Preferred since this is the whole point of
+    //       a dedicated scalar variant.
+}
+
+impl ScalarAggregator {
+    pub fn new(input_schema: Schema, aggr_exprs: Vec<Expr>) -> Self {
+        Self {
+            input_schema,
+            aggr_exprs,
+        }
+    }
+}
+
+impl Aggregator for ScalarAggregator {
+    fn accumulate(&mut self, _batch: &Batch) -> Result<Option<Batch>, ExecutionError> {
+        // TODO: Update the running accumulators (or buffer rows) for each
+        // aggregate function. No output during accumulation: return Ok(None).
+        todo!("ScalarAggregator::accumulate")
+    }
+
+    fn finalize(&mut self) -> Result<Option<Batch>, ExecutionError> {
+        // TODO: First call: produce the single output row from the
+        // accumulators and return Ok(Some(vec![row])). Subsequent calls:
+        // return Ok(None).
+        //
+        // Note: SQL aggregates over an empty input still produce a row with
+        // sentinel values (COUNT=0, SUM=NULL, MIN/MAX=NULL). The existing
+        // free function above shows the expected shape.
+        todo!("ScalarAggregator::finalize")
+    }
 }
 
 #[cfg(test)]

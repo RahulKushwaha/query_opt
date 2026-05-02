@@ -89,6 +89,21 @@ impl DistributedPlanner {
                 aggr_exprs,
                 input,
             } => self.plan_aggregate(group_by, aggr_exprs, input, fragments, exchanges),
+            PhysicalPlan::Limit { .. } => {
+                // TODO: Push Limit into each shard's fragment (each only needs
+                // skip+fetch rows), gather to coordinator, apply Limit again.
+                todo!("plan_limit: push per-shard, gather, re-apply")
+            }
+            PhysicalPlan::SortAggregate { .. } => {
+                // TODO: Per-shard partial SortAggregate, gather (preserving
+                // sort order), final SortAggregate at coordinator.
+                todo!("plan_sort_aggregate: partial per-shard, merge at coordinator")
+            }
+            PhysicalPlan::ScalarAggregate { .. } => {
+                // TODO: Per-shard partial ScalarAggregate, gather, final
+                // combine at coordinator (sum-of-sums for SUM/COUNT, etc.).
+                todo!("plan_scalar_aggregate: partial per-shard, combine at coordinator")
+            }
         }
     }
 

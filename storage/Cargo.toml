@@ -8,7 +8,7 @@ expr = { path = "../expr" }
 row = { path = "../row" }
 execution = { path = "../execution" }
 physical-plan = { path = "../physical-plan" }
-rocksdb = "0.22"
+rocksdb = "0.23"
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
 
