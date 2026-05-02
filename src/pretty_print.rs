@@ -7,6 +7,25 @@
 use colored::Colorize;
 use expr::logical_plan::plan::{JoinType, LogicalPlan};
 use physical_plan::plan::PhysicalPlan;
+use std::time::Duration;
+
+/// Format a duration with an auto-selected unit. Tuned for OLTP latencies:
+///   < 1µs  → integer ns         ("850ns")
+///   < 1ms  → 1-decimal µs       ("12.3µs")
+///   < 1s   → 1-decimal ms       ("1.2ms")
+///   ≥ 1s   → 2-decimal seconds  ("1.50s")
+pub fn format_duration(d: Duration) -> String {
+    let nanos = d.as_nanos();
+    if nanos < 1_000 {
+        format!("{}ns", nanos)
+    } else if nanos < 1_000_000 {
+        format!("{:.1}µs", nanos as f64 / 1_000.0)
+    } else if nanos < 1_000_000_000 {
+        format!("{:.1}ms", nanos as f64 / 1_000_000.0)
+    } else {
+        format!("{:.2}s", d.as_secs_f64())
+    }
+}
 
 const BRANCH: &str = "├── ";
 const LAST: &str = "└── ";

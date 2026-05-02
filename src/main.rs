@@ -5,6 +5,7 @@ use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use sql_parser::{SqlPlanner, SqlStatement};
 use std::collections::HashMap;
+use std::time::Instant;
 use storage::engine::RocksEngine;
 use storage::{Catalog, RocksStorage, StorageRead, StorageWrite};
 
@@ -85,6 +86,8 @@ fn main() {
 }
 
 fn handle_sql(sql: &str, storage: &mut RocksStorage, catalog: &mut HashMap<String, Schema>) {
+    let start = Instant::now();
+
     let is_explain = sql.to_uppercase().starts_with("EXPLAIN ");
     let actual_sql = if is_explain { &sql[8..] } else { sql };
 
@@ -101,7 +104,11 @@ fn handle_sql(sql: &str, storage: &mut RocksStorage, catalog: &mut HashMap<Strin
         SqlStatement::CreateTable { name, schema } => {
             storage.create_table(&name, &schema);
             catalog.insert(name.clone(), schema);
-            println!("Table '{}' created.", name);
+            println!(
+                "Table '{}' created. ({})",
+                name,
+                pretty_print::format_duration(start.elapsed())
+            );
         }
 
         SqlStatement::CreateIndex { table, column } => {
@@ -110,7 +117,12 @@ fn handle_sql(sql: &str, storage: &mut RocksStorage, catalog: &mut HashMap<Strin
                 return;
             }
             storage.create_index(&table, &column);
-            println!("Index on {}.{} created.", table, column);
+            println!(
+                "Index on {}.{} created. ({})",
+                table,
+                column,
+                pretty_print::format_duration(start.elapsed())
+            );
         }
 
         SqlStatement::Insert { table, rows } => {
@@ -119,7 +131,12 @@ fn handle_sql(sql: &str, storage: &mut RocksStorage, catalog: &mut HashMap<Strin
             for row in rows {
                 storage.insert_row(&t, row);
             }
-            println!("Inserted {} row(s) into '{}'.", count, table);
+            println!(
+                "Inserted {} row(s) into '{}'. ({})",
+                count,
+                table,
+                pretty_print::format_duration(start.elapsed())
+            );
         }
 
         SqlStatement::Query(logical_plan) => {
@@ -146,7 +163,7 @@ fn handle_sql(sql: &str, storage: &mut RocksStorage, catalog: &mut HashMap<Strin
             let pp = physical.unwrap_or_else(|| logical_to_physical(&plan_to_use));
             let engine = RocksEngine::new(storage);
             match engine.execute(&pp) {
-                Ok(rows) => print_results(&plan_to_use, &rows),
+                Ok(rows) => print_results(&plan_to_use, &rows, start.elapsed()),
                 Err(e) => eprintln!("Execution error: {}", e),
             }
         }
@@ -228,9 +245,13 @@ fn logical_to_physical(
     }
 }
 
-fn print_results(plan: &expr::logical_plan::plan::LogicalPlan, rows: &[Vec<FieldValue>]) {
+fn print_results(
+    plan: &expr::logical_plan::plan::LogicalPlan,
+    rows: &[Vec<FieldValue>],
+    elapsed: std::time::Duration,
+) {
     if rows.is_empty() {
-        println!("(0 rows)");
+        println!("(0 rows, {})", pretty_print::format_duration(elapsed));
         return;
     }
 
@@ -278,5 +299,9 @@ fn print_results(plan: &expr::logical_plan::plan::LogicalPlan, rows: &[Vec<Field
             .collect();
         println!(" {} ", cells.join(" | "));
     }
-    println!("({} rows)", rows.len());
+    println!(
+        "({} rows, {})",
+        rows.len(),
+        pretty_print::format_duration(elapsed)
+    );
 }
