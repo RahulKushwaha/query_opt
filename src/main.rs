@@ -140,23 +140,12 @@ fn handle_sql(sql: &str, storage: &mut RocksStorage, catalog: &mut HashMap<Strin
                 return;
             }
 
-            // Execute — try physical plan via RocksEngine first, fall back to direct execution.
-            match physical {
-                Some(pp) => {
-                    let engine = RocksEngine::new(storage);
-                    match engine.execute(&pp) {
-                        Ok(rows) => print_results(&plan_to_use, &rows),
-                        Err(e) => eprintln!("Execution error: {}", e),
-                    }
-                }
-                None => {
-                    // Physical planner not implemented — execute logical plan directly.
-                    let engine = RocksEngine::new(storage);
-                    match execute_logical_directly(&engine, &plan_to_use, storage) {
-                        Ok(rows) => print_results(&plan_to_use, &rows),
-                        Err(e) => eprintln!("Execution error: {}", e),
-                    }
-                }
+            // Execute via physical plan.
+            let pp = physical.unwrap_or_else(|| logical_to_physical(&plan_to_use));
+            let engine = RocksEngine::new(storage);
+            match engine.execute(&pp) {
+                Ok(rows) => print_results(&plan_to_use, &rows),
+                Err(e) => eprintln!("Execution error: {}", e),
             }
         }
     }
@@ -181,17 +170,6 @@ fn try_physical_plan(
     }))
     .ok()
     .flatten()
-}
-
-/// Direct execution of a LogicalPlan when the PhysicalPlanner is not yet implemented.
-/// Builds a PhysicalPlan manually (1:1 mapping) and executes it.
-fn execute_logical_directly(
-    engine: &RocksEngine<RocksStorage>,
-    plan: &expr::logical_plan::plan::LogicalPlan,
-    _storage: &RocksStorage,
-) -> Result<Vec<Vec<FieldValue>>, execution::engine::ExecutionError> {
-    let pp = logical_to_physical(plan);
-    engine.execute(&pp)
 }
 
 fn logical_to_physical(
